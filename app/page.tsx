@@ -1,9 +1,11 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { useRouter, usePathname } from "next/navigation"
 import { supabase } from "@/lib/supabase"
 import { Conversation as ElevenLabsClient } from "@elevenlabs/client"
 import { Button } from "@/components/ui/button"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Conversation,
   ConversationContent,
@@ -20,10 +22,69 @@ import {
   PanelLeftOpen,
   Pause,
   Play,
+  X,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import type { AgentState } from "@/components/ui/orb"
 
-export default function VoiceChatUI() {
+interface VoiceChatUIProps {
+  initialSessionId?: string | null
+}
+
+// Helper function to generate session title from first message
+function generateSessionTitle(firstMessage: string): string {
+  // Extract first 3-5 words, clean up, and truncate to ~50 characters
+  const words = firstMessage.trim().split(/\s+/).slice(0, 5)
+  let title = words.join(" ")
+  
+  // Remove special characters that might not look good in titles
+  title = title.replace(/[^\w\s-]/g, "")
+  
+  // Truncate if too long
+  if (title.length > 50) {
+    title = title.substring(0, 47) + "..."
+  }
+  
+  return title || "New Chat"
+}
+
+// Helper function to update session title if needed
+async function updateSessionTitleIfNeeded(sessionId: string, firstUserMessage: string) {
+  try {
+    // Check if session title is still "New Chat" and has no previous messages
+    const { data: session } = await supabase
+      .from("sessions")
+      .select("title")
+      .eq("id", sessionId)
+      .single()
+    
+    if (session && session.title === "New Chat") {
+      // Check message count
+      const { count } = await supabase
+        .from("messages")
+        .select("*", { count: "exact", head: true })
+        .eq("session_id", sessionId)
+        .eq("role", "user")
+      
+      // Only update if this is the first user message
+      if (count === 1) {
+        const newTitle = generateSessionTitle(firstUserMessage)
+        await supabase
+          .from("sessions")
+          .update({ title: newTitle })
+          .eq("id", sessionId)
+      }
+    }
+  } catch (error) {
+    console.error("Error updating session title:", error)
+    // Don't throw - title update failure shouldn't break the flow
+  }
+}
+
+export function VoiceChatUI({ initialSessionId = null }: VoiceChatUIProps = {}) {
+  const router = useRouter()
+  const pathname = usePathname()
   const [mode, setMode] = useState<"voice" | "chat">("chat")
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [paused, setPaused] = useState(false)
@@ -34,7 +95,11 @@ export default function VoiceChatUI() {
   const [sessions, setSessions] = useState<any[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<any[]>([])
+  const [uploadedFiles, setUploadedFiles] = useState<any[]>([])
+  const [contextExpanded, setContextExpanded] = useState(true)
   const [isUploading, setIsUploading] = useState(false)
+  
+  // Refs for audio and conversation management
   const fileInputRef = useRef<HTMLInputElement>(null)
   const conversationRef = useRef<ElevenLabsClient | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
@@ -42,6 +107,23 @@ export default function VoiceChatUI() {
   const audioQueueRef = useRef<AudioBuffer[]>([])
   const isPlayingAudioRef = useRef<boolean>(false)
   const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null)
+  const chatInputRef = useRef<HTMLTextAreaElement>(null)
+  
+  // Refs for current state (used in closures to avoid stale values)
+  const modeRef = useRef<"voice" | "chat">("chat")
+  const pausedRef = useRef<boolean>(false)
+  const isRehydratingRef = useRef<boolean>(false)
+  const lastAgentMessageRef = useRef<string>("")
+  const rehydrationCooldownRef = useRef<number>(0)
+  
+  // Keep refs in sync with state
+  useEffect(() => {
+    modeRef.current = mode
+  }, [mode])
+  
+  useEffect(() => {
+    pausedRef.current = paused
+  }, [paused])
 
   useEffect(() => {
     async function loadSessions() {
@@ -53,37 +135,151 @@ export default function VoiceChatUI() {
 
       if (data) {
         setSessions(data)
-        if (data.length > 0) setActiveSessionId(data[0].id)
       }
     }
 
     loadSessions()
   }, [])
 
+  // Handle initial session ID from props (for dynamic route) or pathname
+  useEffect(() => {
+    if (initialSessionId) {
+      // Validate session exists
+      async function validateAndSetSession() {
+        const { data, error } = await supabase
+          .from("sessions")
+          .select("id")
+          .eq("id", initialSessionId)
+          .eq("deleted", false)
+          .single()
+
+        if (error || !data) {
+          // Session doesn't exist or is deleted, redirect to root
+          router.push("/")
+        } else {
+          setActiveSessionId(initialSessionId)
+          // Save to sessionStorage for caching
+          if (typeof window !== "undefined" && initialSessionId) {
+            sessionStorage.setItem("lastVisitedSessionId", initialSessionId)
+          }
+        }
+      }
+      validateAndSetSession()
+    } else if (pathname === "/") {
+      // Root route: check for cached session
+      if (typeof window !== "undefined") {
+        const cachedSessionId = sessionStorage.getItem("lastVisitedSessionId")
+        if (cachedSessionId) {
+          // Validate cached session still exists
+          async function validateCachedSession() {
+            const { data, error } = await supabase
+              .from("sessions")
+              .select("id")
+              .eq("id", cachedSessionId)
+              .eq("deleted", false)
+              .single()
+
+            if (!error && data) {
+              // Redirect to cached session
+              router.push(`/${cachedSessionId}`)
+            } else {
+              // Invalid cached session, clear it
+              sessionStorage.removeItem("lastVisitedSessionId")
+            }
+          }
+          validateCachedSession()
+        }
+        // If no cached session, stay on root (no activeSessionId)
+      }
+    }
+  }, [initialSessionId, pathname, router])
+
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([])
+      setUploadedFiles([])
       // End conversation when no active session
       endConversation().catch(err => console.error("Error ending conversation:", err))
       return
+    }
+
+    // Validate session still exists (handle case where session was deleted)
+    async function validateSession() {
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("id")
+        .eq("id", activeSessionId)
+        .eq("deleted", false)
+        .single()
+
+      if (error || !data) {
+        // Session was deleted, redirect to root
+        console.warn("Session was deleted, redirecting to root")
+        if (typeof window !== "undefined") {
+          sessionStorage.removeItem("lastVisitedSessionId")
+        }
+        router.push("/")
+        return false
+      }
+      return true
     }
 
     // End any active conversation when switching sessions
     // User must explicitly start a new conversation (lazy start)
     endConversation().catch(err => console.error("Error ending conversation:", err))
 
-    async function loadMessages() {
-      const { data } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("session_id", activeSessionId)
-        .order("created_at", { ascending: true })
+    async function loadData() {
+      const isValid = await validateSession()
+      if (!isValid) return
 
-      setMessages(data || [])
+      async function loadMessages() {
+        const { data } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("session_id", activeSessionId)
+          .order("created_at", { ascending: true })
+
+        setMessages(data || [])
+      }
+
+      async function loadFiles() {
+        const { data } = await supabase
+          .from("files")
+          .select("*")
+          .eq("session_id", activeSessionId)
+          .order("created_at", { ascending: true })
+
+        setUploadedFiles(data || [])
+      }
+
+      loadMessages()
+      loadFiles()
     }
 
-    loadMessages()
-  }, [activeSessionId])
+    loadData()
+    
+    // Refresh sessions list to get updated titles
+    async function refreshSessions() {
+      const { data } = await supabase
+        .from("sessions")
+        .select("*")
+        .eq("deleted", false)
+        .order("created_at", { ascending: false })
+      if (data) {
+        setSessions(data)
+        // If current session is no longer in the list, it was deleted
+        const currentSessionExists = data.some(s => s.id === activeSessionId)
+        if (!currentSessionExists && activeSessionId) {
+          console.warn("Current session no longer exists in sessions list")
+          if (typeof window !== "undefined") {
+            sessionStorage.removeItem("lastVisitedSessionId")
+          }
+          router.push("/")
+        }
+      }
+    }
+    refreshSessions()
+  }, [activeSessionId, router])
 
   async function createNewSession() {
     const { data, error } = await supabase
@@ -95,6 +291,12 @@ export default function VoiceChatUI() {
     if (!error && data) {
       setSessions((prev) => [data, ...prev])
       setActiveSessionId(data.id)
+      // Navigate to new session route
+      router.push(`/${data.id}`)
+      // Save to sessionStorage
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem("lastVisitedSessionId", data.id)
+      }
     }
   }
 
@@ -106,12 +308,17 @@ export default function VoiceChatUI() {
 
     setSessions([])
     setMessages([])
+    setUploadedFiles([])
     setActiveSessionId(null)
+    // Clear cache and redirect to root
+    if (typeof window !== "undefined") {
+      sessionStorage.removeItem("lastVisitedSessionId")
+    }
+    router.push("/")
   }
 
   // Constants for cost safety
   const VOICE_SESSION_TIMEOUT = 30 * 60 * 1000 // 30 minutes
-  const SILENCE_TIMEOUT = 5 * 60 * 1000 // 5 minutes
 
   async function requestMicAccess(): Promise<boolean> {
     try {
@@ -126,26 +333,23 @@ export default function VoiceChatUI() {
   }
 
   // Helper function to rehydrate conversation context
-  async function rehydrateConversation(sessionId: string) {
+  async function rehydrateConversation(sessionId: string, isModeSwitch: boolean = false) {
     if (!conversationRef.current) return
 
     try {
-      // Get conversation history from database (last 20 messages)
+      // Get conversation history from database (last 30 messages for better context)
       const { data: messages } = await supabase
         .from("messages")
         .select("*")
         .eq("session_id", sessionId)
         .in("role", ["user", "assistant"])
         .order("created_at", { ascending: true })
-        .limit(20)
+        .limit(30)
 
       if (!messages || messages.length === 0) {
-        console.log("No conversation history to rehydrate")
+        console.log("[REHYDRATE] No conversation history to rehydrate")
         return
       }
-
-      // Check if this is a continuing conversation (more than just intro)
-      const hasSubstantialHistory = messages.length > 2
 
       // Build context message from conversation history
       const contextMessages = messages
@@ -162,33 +366,61 @@ export default function VoiceChatUI() {
 
       // Only rehydrate if there's actual conversation history
       if (contextMessages.trim()) {
-        // Very explicit instruction to prevent intro repetition and responses
-        const contextPrompt = `[SYSTEM CONTEXT - DO NOT RESPOND]
+        // Enhanced prompt to prevent repetition, especially on mode switches
+        const modeSwitchNote = isModeSwitch 
+          ? "\n\nIMPORTANT: The user is switching between voice and chat modes. This is the SAME conversation. Do NOT re-ask questions you already asked. Do NOT repeat information you already collected. Continue naturally from where you left off."
+          : ""
+        
+        const contextPrompt = `[SYSTEM CONTEXT UPDATE - ABSOLUTELY DO NOT RESPOND - THIS IS NOT A USER MESSAGE]
 
-This is a CONTINUATION of an existing conversation. You have already introduced yourself and greeted the user. 
+⚠️ CRITICAL: This is a SYSTEM CONTEXT UPDATE, NOT a user message. DO NOT RESPOND TO THIS MESSAGE.
 
-Previous conversation:
+This is a CONTINUATION of an existing conversation. You have already introduced yourself and greeted the user.${modeSwitchNote}
+
+COMPLETE CONVERSATION HISTORY:
 ${contextMessages}
 
-CRITICAL INSTRUCTIONS:
-- This is ONLY for your context/memory
-- Do NOT respond to this message
-- Do NOT repeat any introductions or greetings
-- Do NOT say "I'll help you" or similar phrases
-- Wait silently for the user's actual input
-- Only respond when the user speaks/types something new
-- Do not generate any audio or text response to this context message`
+🚫 ABSOLUTE REQUIREMENTS - YOU MUST NOT:
+- DO NOT respond to this message
+- DO NOT generate any text response
+- DO NOT generate any audio response
+- DO NOT say anything
+- DO NOT repeat questions you already asked
+- DO NOT re-ask for information you already collected
+- DO NOT say "I understand" or "I'll help you" or similar phrases
+- DO NOT acknowledge this message in any way
+- DO NOT generate any output whatsoever
+
+✅ WHAT YOU SHOULD DO:
+- Remember all information from the conversation history above
+- Wait silently for the user's NEXT actual input
+- Only respond when the user speaks/types something NEW (not this message)
+- Continue naturally from where the conversation left off
+- If switching modes, maintain full context - this is the SAME conversation
+
+This message is for YOUR MEMORY ONLY. The user has NOT asked you anything. Wait for their next message.`
+        
+        // CRITICAL: Set rehydration flag to ignore responses for a short period
+        isRehydratingRef.current = true
+        rehydrationCooldownRef.current = Date.now() + 5000 // 5 second cooldown
         
         // Send context message - agent should not respond based on instructions
         try {
           await (conversationRef.current as any).sendUserMessage(contextPrompt)
-          console.log("Conversation context rehydrated with", messages.length, "messages")
+          console.log(`[REHYDRATE] Conversation context rehydrated with ${messages.length} messages${isModeSwitch ? ' (mode switch)' : ''}`)
+          
+          // Clear rehydration flag after a delay to allow any immediate responses to be filtered
+          setTimeout(() => {
+            isRehydratingRef.current = false
+            console.log("[REHYDRATE] Rehydration cooldown ended")
+          }, 5000)
         } catch (error) {
-          console.error("Error sending rehydration context:", error)
+          console.error("[REHYDRATE] Error sending rehydration context:", error)
+          isRehydratingRef.current = false
         }
       }
     } catch (error) {
-      console.error("Failed to rehydrate conversation:", error)
+      console.error("[REHYDRATE] Failed to rehydrate conversation:", error)
       // Don't throw - rehydration failure shouldn't break the session
     }
   }
@@ -231,6 +463,12 @@ CRITICAL INSTRUCTIONS:
   }
 
   async function playAudio(audioData: ArrayBuffer) {
+    // CRITICAL: Don't queue audio if in chat mode or paused
+    if (modeRef.current === "chat" || pausedRef.current) {
+      console.log("Skipping audio - chat mode or paused")
+      return
+    }
+
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
     }
@@ -242,6 +480,13 @@ CRITICAL INSTRUCTIONS:
       }
 
       const audioBuffer = await audioContextRef.current.decodeAudioData(audioData)
+      
+      // Double-check before queuing (state might have changed)
+      const currentMode = modeRef.current
+      if (currentMode !== "voice" || pausedRef.current) {
+        return
+      }
+      
       audioQueueRef.current.push(audioBuffer)
       
       if (!isPlayingAudioRef.current) {
@@ -249,7 +494,6 @@ CRITICAL INSTRUCTIONS:
       }
     } catch (error) {
       console.error("Error decoding/playing audio:", error)
-      // If decoding fails, it might be raw PCM - log for debugging
     }
   }
 
@@ -257,18 +501,26 @@ CRITICAL INSTRUCTIONS:
     if (audioQueueRef.current.length === 0 || !audioContextRef.current) {
       isPlayingAudioRef.current = false
       currentAudioSourceRef.current = null
-      if (!paused) {
+      if (!pausedRef.current && modeRef.current === "voice") {
         setAgentState("listening")
       }
       return
     }
 
-    // Don't play audio if paused
-    if (paused) {
-      // Clear the queue when paused
+    // Don't play audio if paused or in chat mode - use refs for current state
+    if (pausedRef.current || modeRef.current === "chat") {
+      // Clear the queue when paused or in chat mode
       audioQueueRef.current = []
       isPlayingAudioRef.current = false
-      currentAudioSourceRef.current = null
+      if (currentAudioSourceRef.current) {
+        try {
+          currentAudioSourceRef.current.stop()
+          currentAudioSourceRef.current.disconnect()
+        } catch (error) {
+          // Ignore errors
+        }
+        currentAudioSourceRef.current = null
+      }
       return
     }
 
@@ -289,31 +541,58 @@ CRITICAL INSTRUCTIONS:
     source.start()
   }
 
-  // Centralized conversation lifecycle: Start voice conversation
-  async function startVoiceConversation(sessionId: string) {
-    // CRITICAL: End existing conversation first
-    await endConversation()
-
-    // Request mic permission
-    const micGranted = await requestMicAccess()
-    if (!micGranted) {
-      // Fallback to chat mode
-      await startChatConversation(sessionId)
-      setMode("chat")
-      alert("Voice disconnected. Switched to chat.")
-      return
+  // Centralized conversation lifecycle: Start or resume conversation
+  async function startConversation(sessionId: string, initialMode: "voice" | "chat") {
+    // Always start fresh - mode switching should call endConversation first
+    if (conversationRef.current) {
+      console.warn("[SESSION] Conversation already active - this should not happen during mode switch. Ending existing session.")
+      await endConversation()
+      await new Promise(resolve => setTimeout(resolve, 300))
     }
 
     try {
-      setAgentState("listening")
-      setIsVoiceSessionActive(true)
+      // For voice mode, request mic permission first
+      if (initialMode === "voice") {
+        console.log("[SESSION] Requesting microphone access for voice mode")
+        const micGranted = await requestMicAccess()
+        if (!micGranted) {
+          throw new Error("Microphone access denied")
+        }
+        console.log("[SESSION] Microphone access granted")
+        setAgentState("listening")
+        setIsVoiceSessionActive(true)
+      } else {
+        console.log("[SESSION] Starting in chat mode (textOnly: true)")
+      }
 
       conversationRef.current = await ElevenLabsClient.startSession({
         agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID!,
         ...({ connectionType: "websocket" } as any),
         ...(sessionId ? { sessionId } as any : {}),
+        ...(initialMode === "chat" ? {
+          overrides: {
+            conversation: {
+              textOnly: true
+            },
+          },
+        } : {}),
         onMessage: async (message: any) => {
-          console.log("Voice SDK Message:", message)
+          console.log("[SDK] Message received:", message.type || message.source, "Mode:", modeRef.current, "Paused:", pausedRef.current)
+          
+          // CRITICAL: Ignore all messages when paused (except for system messages if needed)
+          if (pausedRef.current) {
+            console.log("[SDK] Ignoring message - session is paused")
+            return
+          }
+          
+          // CRITICAL: In chat mode, ignore voice-related messages (user transcripts from mic)
+          if (modeRef.current === "chat") {
+            if (message.type === "user_transcript" || 
+                (message.source === "user" && (message.type === "user_message" || message.audio))) {
+              console.log("[SDK] Ignoring voice input in chat mode")
+              return
+            }
+          }
           
           // Handle user messages/transcripts
           if (message.type === "user_transcript" || 
@@ -330,7 +609,7 @@ CRITICAL INSTRUCTIONS:
                 session_id: sessionId,
                 role: "user",
                 content: userContent,
-                mode: "voice",
+                mode: mode,
                 created_at: new Date().toISOString(),
               }
               setMessages((prev) => [...prev, tempUserMsg])
@@ -340,8 +619,12 @@ CRITICAL INSTRUCTIONS:
                 session_id: sessionId,
                 role: "user",
                 content: userContent,
-                mode: "voice",
+                mode: mode,
               })
+              
+              // Update session title if this is the first message
+              await updateSessionTitleIfNeeded(sessionId, userContent)
+              
               setAgentState("thinking")
 
               // Refresh messages to get the real ID
@@ -353,6 +636,16 @@ CRITICAL INSTRUCTIONS:
               if (refreshedMessages) {
                 setMessages(refreshedMessages)
               }
+              
+              // Refresh sessions to update title in sidebar
+              const { data: updatedSessions } = await supabase
+                .from("sessions")
+                .select("*")
+                .eq("deleted", false)
+                .order("created_at", { ascending: false })
+              if (updatedSessions) {
+                setSessions(updatedSessions)
+              }
             }
 
           } else if (message.type === "agent_response" || 
@@ -361,26 +654,87 @@ CRITICAL INSTRUCTIONS:
             // Agent text response
             const agentContent = message.text || message.message || message.response || message.content || ""
             
+            // CRITICAL: Filter out blank/empty messages
+            if (!agentContent || !agentContent.trim()) {
+              console.log("[SDK] Ignoring blank/empty agent message")
+              return
+            }
+            
+            // CRITICAL: Ignore responses during rehydration cooldown period
+            if (isRehydratingRef.current || Date.now() < rehydrationCooldownRef.current) {
+              console.log("[SDK] Ignoring agent response - rehydration cooldown active")
+              return
+            }
+            
+            // CRITICAL: Prevent duplicate messages - ignore if same as last message
+            const trimmedContent = agentContent.trim()
+            if (trimmedContent === lastAgentMessageRef.current) {
+              console.log("[SDK] Ignoring duplicate agent message")
+              return
+            }
+            
+            // CRITICAL: In chat mode, ensure we're not in voice mode (defensive check)
+            if (modeRef.current !== "chat" && modeRef.current !== "voice") {
+              console.log("[SDK] Ignoring message - invalid mode")
+              return
+            }
+            
             if (agentContent.trim()) {
+              // Update last message ref to prevent duplicates
+              lastAgentMessageRef.current = trimmedContent
+              
+              // CRITICAL: Check if this message already exists in the database (prevent duplicates)
+              const { data: existingMessages } = await supabase
+                .from("messages")
+                .select("id, content")
+                .eq("session_id", sessionId)
+                .eq("role", "assistant")
+                .order("created_at", { ascending: false })
+                .limit(5)
+              
+              // Check if the exact same message was just saved
+              const isDuplicate = existingMessages?.some(
+                (msg: any) => msg.content?.trim() === trimmedContent
+              )
+              
+              if (isDuplicate) {
+                console.log("[SDK] Message already exists in database - skipping save")
+                // Still update UI if needed, but don't save again
+                return
+              }
+              
               // Optimistic update
               const tempAgentMsg = {
                 id: `temp-agent-${Date.now()}`,
                 session_id: sessionId,
                 role: "assistant",
                 content: agentContent,
-                mode: "voice",
+                mode: mode,
                 created_at: new Date().toISOString(),
               }
-              setMessages((prev) => [...prev, tempAgentMsg])
+              setMessages((prev) => {
+                // Also check in current state to prevent UI duplicates
+                const alreadyExists = prev.some(
+                  (msg: any) => msg.role === "assistant" && msg.content?.trim() === trimmedContent
+                )
+                if (alreadyExists) {
+                  console.log("[SDK] Message already in UI - skipping optimistic update")
+                  return prev
+                }
+                return [...prev, tempAgentMsg]
+              })
 
               // Save to database
               await supabase.from("messages").insert({
                 session_id: sessionId,
                 role: "assistant",
                 content: agentContent,
-                mode: "voice",
+                mode: mode,
               })
-              setAgentState("talking")
+              
+              if (mode === "voice") {
+                setAgentState("talking")
+              }
 
               // Refresh messages to get the real ID
               const { data: refreshedMessages } = await supabase
@@ -394,8 +748,18 @@ CRITICAL INSTRUCTIONS:
             }
 
           } else if (message.type === "agent_audio" || message.audio) {
-            // Agent audio chunk - only play if not paused
-            if (!paused) {
+            // Agent audio chunk - only play if in voice mode and not paused
+            // Use refs to get current state (not closure-captured values)
+            // CRITICAL: Ignore audio in chat mode or when paused
+            if (modeRef.current !== "voice") {
+              console.log("[SDK] Ignoring audio - chat mode active")
+              return
+            }
+            if (pausedRef.current) {
+              console.log("[SDK] Ignoring audio - session paused")
+              return
+            }
+            if (modeRef.current === "voice" && !pausedRef.current) {
               const audioData = message.audio || message.audioChunk || message.data
               if (audioData) {
                 try {
@@ -428,17 +792,61 @@ CRITICAL INSTRUCTIONS:
                   console.error("Error processing audio data:", error)
                 }
               }
+            } else {
+              // In chat mode or paused - ignore audio completely
+              console.log("Ignoring audio - chat mode or paused")
             }
 
           } else if (message.source === "ai" && message.message) {
             // Fallback: handle standard AI messages
+            const fallbackContent = message.message || ""
+            
+            // CRITICAL: Filter out blank/empty messages
+            if (!fallbackContent || !fallbackContent.trim()) {
+              console.log("[SDK] Ignoring blank/empty fallback agent message")
+              return
+            }
+            
+            // CRITICAL: Ignore responses during rehydration cooldown period
+            if (isRehydratingRef.current || Date.now() < rehydrationCooldownRef.current) {
+              console.log("[SDK] Ignoring fallback agent response - rehydration cooldown active")
+              return
+            }
+            
+            // CRITICAL: Prevent duplicate messages
+            const trimmedContent = fallbackContent.trim()
+            if (trimmedContent === lastAgentMessageRef.current) {
+              console.log("[SDK] Ignoring duplicate fallback agent message")
+              return
+            }
+            
+            // Update last message ref
+            lastAgentMessageRef.current = trimmedContent
+            
+            // Only process if we have valid content
             await supabase.from("messages").insert({
               session_id: sessionId,
               role: "assistant",
-              content: message.message,
-              mode: "voice",
+              content: fallbackContent,
+              mode: mode,
             })
-            setAgentState("listening")
+            
+            // Optimistic update
+            const tempAgentMsg = {
+              id: `temp-agent-${Date.now()}`,
+              session_id: sessionId,
+              role: "assistant",
+              content: fallbackContent,
+              mode: mode,
+              created_at: new Date().toISOString(),
+            }
+            setMessages((prev) => [...prev, tempAgentMsg])
+            
+            if (mode === "voice") {
+              setAgentState("listening")
+            } else {
+              setAgentState("thinking")
+            }
 
             // Refresh messages
             const { data: refreshedMessages } = await supabase
@@ -446,11 +854,16 @@ CRITICAL INSTRUCTIONS:
               .select("*")
               .eq("session_id", sessionId)
               .order("created_at", { ascending: true })
-            setMessages(refreshedMessages || [])
+            if (refreshedMessages) {
+              setMessages(refreshedMessages)
+            }
+          } else {
+            // Log unhandled message types for debugging
+            console.log("[SDK] Unhandled message type:", message.type, "Source:", message.source, "Full message:", message)
           }
         },
         onError: (error: any) => {
-          console.error("Voice Conversation Error:", error)
+          console.error("Conversation Error:", error)
           setIsVoiceSessionActive(false)
           setAgentState(null)
           // Allow user to restart by clicking Orb again
@@ -460,75 +873,16 @@ CRITICAL INSTRUCTIONS:
       // CRITICAL: Rehydrate conversation context after session starts
       // Small delay to ensure session is fully initialized
       await new Promise(resolve => setTimeout(resolve, 500))
-      await rehydrateConversation(sessionId)
+      await rehydrateConversation(sessionId, false)
+      
+      console.log(`[SESSION] Started conversation in ${initialMode} mode for session ${sessionId}`)
     } catch (err) {
-      console.error("Failed to start voice session:", err)
+      console.error("Failed to start conversation:", err)
       
       // Clean up on error
       await endConversation()
       
-      // Fallback to chat mode
-      try {
-        await startChatConversation(sessionId)
-        setMode("chat")
-        alert("Voice disconnected. Switched to chat.")
-      } catch (fallbackError) {
-        console.error("Failed to fallback to chat:", fallbackError)
-      }
-    }
-  }
-
-  // Centralized conversation lifecycle: Start chat conversation
-  async function startChatConversation(sessionId: string) {
-    // CRITICAL: End existing conversation first
-    await endConversation()
-
-    try {
-      conversationRef.current = await ElevenLabsClient.startSession({
-        agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID!,
-        connectionType: "websocket" as any,
-        ...(sessionId ? { sessionId } as any : {}),
-        overrides: {
-          conversation: {
-            textOnly: true
-          },
-        },
-        onMessage: async (message: any) => {
-          console.log("SDK Message:", message)
-          if (message.source === "ai" && message.message) {
-            // Save assistant message to Supabase
-            await supabase.from("messages").insert({
-              session_id: sessionId,
-              role: "assistant",
-              content: message.message,
-              mode: "chat",
-            })
-
-            // Refresh messages
-            const { data: refreshedMessages } = await supabase
-              .from("messages")
-              .select("*")
-              .eq("session_id", sessionId)
-              .order("created_at", { ascending: true })
-
-            setMessages(refreshedMessages || [])
-          }
-        },
-        onError: (error: any) => {
-          console.error("Chat Conversation Error:", error)
-          // Connection lost - user can restart by sending a message
-          conversationRef.current = null
-        }
-      })
-
-      // CRITICAL: Rehydrate conversation context after session starts
-      // Small delay to ensure session is fully initialized
-      await new Promise(resolve => setTimeout(resolve, 500))
-      await rehydrateConversation(sessionId)
-    } catch (err) {
-      console.error("Failed to start chat conversation:", err)
-      conversationRef.current = null
-      throw err // Re-throw so caller can handle
+      throw err
     }
   }
 
@@ -543,8 +897,6 @@ CRITICAL INSTRUCTIONS:
 
     return () => clearTimeout(timeout)
   }, [isVoiceSessionActive])
-
-  // Note: Removed auto-start useEffect - conversations now start lazily on user interaction
 
   // Cleanup on unmount
   useEffect(() => {
@@ -642,21 +994,8 @@ Use this as reference context for future responses. Do not repeat this content b
         await (conversationRef.current as any).sendUserMessage(contextMessage)
       }
 
-      // 6. Notify User in UI (System message with summary)
-      const systemMsgContent = summary
-        ? `📎 File uploaded: ${file.name}\n\n📄 Summary:\n${summary}`
-        : `📎 File uploaded: ${file.name}`
-
-      const systemMsg = {
-        session_id: activeSessionId,
-        role: "system",
-        content: systemMsgContent,
-        mode: mode, // Use current mode (voice or chat)
-      }
-
-      await supabase.from("messages").insert(systemMsg)
-
-      setMessages((prev) => [...prev, { ...systemMsg, id: `temp-sys-${Date.now()}` }])
+      // 6. Update UI to show uploaded file
+      setUploadedFiles((prev) => [...prev, fileData])
 
     } catch (error) {
       console.error("Upload failed:", error)
@@ -672,7 +1011,12 @@ Use this as reference context for future responses. Do not repeat this content b
 
     if (!isVoiceSessionActive) {
       // Lazy start voice session on Orb click
-      await startVoiceConversation(activeSessionId)
+      try {
+        await startConversation(activeSessionId, "voice")
+      } catch (error) {
+        console.error("Failed to start voice conversation:", error)
+        alert("Failed to start voice mode. Please try again.")
+      }
     }
   }
 
@@ -680,52 +1024,85 @@ Use this as reference context for future responses. Do not repeat this content b
     const newPaused = !paused
 
     if (newPaused) {
-      // PAUSING: Disable mic input and stop audio, but keep session alive
+      // PAUSING/HOLDING: Stop mic completely and stop audio, but keep session alive
+      console.log("[PAUSE] Pausing voice session")
+      setPaused(true) // Set state first so ref updates immediately
+      pausedRef.current = true
+      
+      // CRITICAL: Stop mic tracks completely (not just disable) to fully release mic
       if (micStreamRef.current) {
         const tracks = micStreamRef.current.getAudioTracks()
         tracks.forEach(track => {
-          track.enabled = false // Disable but don't stop (keeps stream alive)
+          track.stop() // Stop completely to release mic resource
         })
+        micStreamRef.current = null // Clear reference
+        console.log("[PAUSE] Stopped and released microphone completely")
       }
 
-      // Stop audio playback
+      // Stop audio playback immediately
       if (currentAudioSourceRef.current) {
         try {
           currentAudioSourceRef.current.stop()
           currentAudioSourceRef.current.disconnect()
           currentAudioSourceRef.current = null
+          console.log("[PAUSE] Stopped current audio playback")
         } catch (error) {
           // Source might already be stopped
         }
       }
+      
+      // Clear audio queue to prevent any queued audio from playing
       audioQueueRef.current = []
       isPlayingAudioRef.current = false
+      console.log("[PAUSE] Cleared audio queue")
 
       // Try to pause via SDK if method exists
       if (conversationRef.current) {
         try {
           if ((conversationRef.current as any).pause && typeof (conversationRef.current as any).pause === "function") {
             (conversationRef.current as any).pause()
+            console.log("[PAUSE] Called SDK pause() method")
           }
           // Also try mute method if pause doesn't exist
           else if ((conversationRef.current as any).mute && typeof (conversationRef.current as any).mute === "function") {
             (conversationRef.current as any).mute(true)
+            console.log("[PAUSE] Called SDK mute(true) method")
+          } else {
+            console.log("[PAUSE] SDK pause/mute methods not available - using message filtering")
           }
         } catch (error) {
-          console.log("SDK pause method not available")
+          console.log("[PAUSE] Error calling SDK pause method:", error)
         }
       }
 
-      setPaused(true)
       setAgentState("thinking")
+      console.log("[PAUSE] Session paused - all messages will be ignored until resume")
 
     } else {
-      // UNPAUSING: Re-enable mic and resume session
-      if (micStreamRef.current) {
+      // RESUMING: Re-request mic access and resume session
+      console.log("[PAUSE] Resuming voice session")
+      setPaused(false) // Set state first so ref updates immediately
+      pausedRef.current = false
+      
+      // CRITICAL: Re-request mic access since we stopped it completely
+      if (!micStreamRef.current) {
+        console.log("[PAUSE] Re-requesting microphone access")
+        const micGranted = await requestMicAccess()
+        if (!micGranted) {
+          console.error("[PAUSE] Failed to re-acquire microphone - staying paused")
+          setPaused(true)
+          pausedRef.current = true
+          alert("Failed to re-acquire microphone access. Please check permissions.")
+          return
+        }
+        console.log("[PAUSE] Microphone re-acquired successfully")
+      } else {
+        // If stream still exists (shouldn't happen, but handle gracefully)
         const tracks = micStreamRef.current.getAudioTracks()
         tracks.forEach(track => {
           track.enabled = true // Re-enable tracks
         })
+        console.log("[PAUSE] Re-enabled existing microphone tracks")
       }
 
       // Try to unpause via SDK if method exists
@@ -733,29 +1110,67 @@ Use this as reference context for future responses. Do not repeat this content b
         try {
           if ((conversationRef.current as any).resume && typeof (conversationRef.current as any).resume === "function") {
             (conversationRef.current as any).resume()
+            console.log("[PAUSE] Called SDK resume() method")
           }
           else if ((conversationRef.current as any).mute && typeof (conversationRef.current as any).mute === "function") {
             (conversationRef.current as any).mute(false)
+            console.log("[PAUSE] Called SDK mute(false) method")
+          } else {
+            console.log("[PAUSE] SDK resume/unmute methods not available - message filtering disabled")
           }
         } catch (error) {
-          console.log("SDK resume method not available")
+          console.log("[PAUSE] Error calling SDK resume method:", error)
         }
       }
 
-      setPaused(false)
       setAgentState("listening")
+      console.log("[PAUSE] Session resumed - messages will be processed")
     }
   }
 
   async function sendChatMessage(text: string) {
-    if (!activeSessionId || isSwitching) return
+    if (isSwitching || !text.trim()) {
+      console.log("[CHAT] Cannot send message - invalid state:", { isSwitching, hasText: !!text.trim() })
+      return
+    }
+
+    // Lazy session creation: create session if we don't have one
+    let sessionId: string = activeSessionId || ""
+    if (!sessionId) {
+      console.log("[CHAT] No active session, creating new one")
+      const { data, error } = await supabase
+        .from("sessions")
+        .insert({ title: "New Chat" })
+        .select()
+        .single()
+
+      if (error || !data) {
+        console.error("[CHAT] Failed to create session:", error)
+        alert("Failed to create session. Please try again.")
+        return
+      }
+
+      sessionId = data.id
+      setActiveSessionId(sessionId)
+      setSessions((prev) => [data, ...prev])
+      
+      // Navigate to new session route
+      router.push(`/${sessionId}`)
+      // Save to sessionStorage
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem("lastVisitedSessionId", sessionId)
+      }
+    }
+
+    console.log("[CHAT] Sending message in chat mode")
 
     // Lazy start chat session if not active
     if (!conversationRef.current) {
       try {
-        await startChatConversation(activeSessionId)
+        console.log("[CHAT] Starting chat session")
+        await startConversation(sessionId, "chat")
       } catch (error) {
-        console.error("Failed to start chat session:", error)
+        console.error("[CHAT] Failed to start chat session:", error)
         alert("Failed to start conversation. Please try again.")
         return
       }
@@ -763,47 +1178,94 @@ Use this as reference context for future responses. Do not repeat this content b
 
     // 1. Save user message
     await supabase.from("messages").insert({
-      session_id: activeSessionId,
+      session_id: sessionId,
       role: "user",
       content: text,
       mode: "chat",
     })
+    
+    // Update session title if this is the first message
+    await updateSessionTitleIfNeeded(sessionId, text)
 
     // Optimistic update
-    setMessages((prev) => [...prev, { id: `temp-user-${Date.now()}`, role: "user", content: text }])
+    setMessages((prev) => [...prev, { id: `temp-user-${Date.now()}`, role: "user", content: text, session_id: sessionId, created_at: new Date().toISOString() }])
+    
+    // Set agent state to thinking
+    setAgentState("thinking")
 
     // 2. Send to SDK
     if (conversationRef.current) {
       try {
+        console.log("[CHAT] Sending message to SDK")
         await (conversationRef.current as any).sendUserMessage(text)
+        console.log("[CHAT] Message sent successfully")
       } catch (error) {
-        console.error("Failed to send message:", error)
+        console.error("[CHAT] Failed to send message:", error)
         // Try to restart session
-        await startChatConversation(activeSessionId)
-        await (conversationRef.current as any)?.sendUserMessage(text)
+        try {
+          await startConversation(sessionId, "chat")
+          await (conversationRef.current as any)?.sendUserMessage(text)
+          console.log("[CHAT] Message sent after session restart")
+        } catch (retryError) {
+          console.error("[CHAT] Failed to send message after retry:", retryError)
+          alert("Failed to send message. Please try again.")
+        }
       }
+    } else {
+      console.error("[CHAT] No conversation session available")
+      alert("Session not available. Please try again.")
+    }
+    
+    // Refresh sessions to update title in sidebar
+    const { data: updatedSessions } = await supabase
+      .from("sessions")
+      .select("*")
+      .eq("deleted", false)
+      .order("created_at", { ascending: false })
+    if (updatedSessions) {
+      setSessions(updatedSessions)
     }
   }
 
-  // Clean mode switch logic
+  // CRITICAL: Mode switching WITH proper session restart
   async function switchToVoice() {
     if (isSwitching || !activeSessionId) return
 
+    console.log("[MODE] Switching to voice mode")
     setIsSwitching(true)
     try {
-      await endConversation()
-      await startVoiceConversation(activeSessionId)
-      setMode("voice")
-    } catch (error) {
-      console.error("Failed to switch to voice:", error)
-      // Fallback to chat on error
-      try {
-        await startChatConversation(activeSessionId)
-        setMode("chat")
-        alert("Voice unavailable. Switched to chat.")
-      } catch (fallbackError) {
-        console.error("Failed to fallback to chat:", fallbackError)
+      // Always restart session to ensure proper voice mode
+      // This ensures the SDK is in voice mode (not textOnly)
+      const hadActiveSession = !!conversationRef.current
+      
+      // End existing session if it exists
+      if (conversationRef.current) {
+        console.log("[MODE] Ending existing session before switching to voice")
+        await endConversation()
+        // Small delay to ensure clean shutdown
+        await new Promise(resolve => setTimeout(resolve, 300))
       }
+      
+      // Start new session in voice mode
+      await startConversation(activeSessionId, "voice")
+      
+      // Rehydrate context if we had an active session (mode switch, not initial start)
+      if (hadActiveSession) {
+        console.log("[MODE] Rehydrating context after voice mode switch")
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await rehydrateConversation(activeSessionId, true)
+      }
+      
+      setMode("voice")
+      modeRef.current = "voice"
+      setPaused(false)
+      pausedRef.current = false
+      console.log("[MODE] Successfully switched to voice mode")
+    } catch (error) {
+      console.error("[MODE] Failed to switch to voice:", error)
+      alert("Voice unavailable. Staying in chat mode.")
+      setMode("chat")
+      modeRef.current = "chat"
     } finally {
       setIsSwitching(false)
     }
@@ -812,36 +1274,112 @@ Use this as reference context for future responses. Do not repeat this content b
   async function switchToChat() {
     if (isSwitching || !activeSessionId) return
 
+    console.log("[MODE] Switching to chat mode")
     setIsSwitching(true)
     try {
-      await endConversation()
-      await startChatConversation(activeSessionId)
+      // Always restart session to ensure proper chat mode (textOnly: true)
+      // This ensures the SDK is in text-only mode and won't listen to mic
+      const hadActiveSession = !!conversationRef.current
+      
+      // End existing session if it exists
+      if (conversationRef.current) {
+        console.log("[MODE] Ending existing session before switching to chat")
+        await endConversation()
+        // Small delay to ensure clean shutdown
+        await new Promise(resolve => setTimeout(resolve, 300))
+      }
+      
+      // Start new session in chat mode (textOnly: true)
+      await startConversation(activeSessionId, "chat")
+      
+      // Rehydrate context if we had an active session (mode switch, not initial start)
+      if (hadActiveSession) {
+        console.log("[MODE] Rehydrating context after chat mode switch")
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await rehydrateConversation(activeSessionId, true)
+      }
+      
+      // CRITICAL: Stop mic completely in chat mode (not just disable)
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(track => {
+          track.stop() // Stop completely to release mic resource
+        })
+        micStreamRef.current = null // Clear reference
+        console.log("[MODE] Stopped and released microphone in chat mode")
+      }
+      
+      // CRITICAL: Clear audio queue and stop any playing audio immediately
+      audioQueueRef.current = []
+      isPlayingAudioRef.current = false
+      if (currentAudioSourceRef.current) {
+        try {
+          currentAudioSourceRef.current.stop()
+          currentAudioSourceRef.current.disconnect()
+          currentAudioSourceRef.current = null
+        } catch (error) {
+          // Ignore
+        }
+      }
+      
+      setIsVoiceSessionActive(false)
+      setAgentState(null)
+      setPaused(false)
+      pausedRef.current = false
       setMode("chat")
+      modeRef.current = "chat" // Update ref immediately
+      console.log("[MODE] Successfully switched to chat mode")
     } catch (error) {
-      console.error("Failed to switch to chat:", error)
-      // At least end the conversation
-      await endConversation()
+      console.error("[MODE] Failed to switch to chat:", error)
+      alert("Failed to switch to chat mode.")
     } finally {
       setIsSwitching(false)
     }
   }
 
+  // Auto-resize textarea
+  const handleTextareaInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const target = e.currentTarget
+    target.style.height = "auto"
+    target.style.height = target.scrollHeight + "px"
+  }
+
+  const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      const text = e.currentTarget.value
+      if (text.trim()) {
+        sendChatMessage(text)
+        e.currentTarget.value = ""
+        e.currentTarget.style.height = "auto"
+      }
+    }
+  }
+
+  // Filter out system messages from display (they're in context panel now)
+  const displayMessages = messages.filter(msg => msg.role !== "system")
+
   return (
-    <div className="h-screen flex bg-neutral-950 text-white overflow-hidden">
+    <div className="h-screen flex bg-black text-white overflow-hidden">
       {/* Sidebar */}
       {sidebarOpen && (
-        <aside className="w-64 bg-neutral-900 border-r border-neutral-800 p-4 flex flex-col">
-          <Button variant="secondary" className="mb-3" onClick={createNewSession}>+ New Chat</Button>
+        <aside className="w-64 bg-black border-r border-neutral-900 p-4 flex flex-col flex-shrink-0">
+          <Button variant="secondary" className="mb-3 bg-neutral-800 text-white hover:bg-neutral-700 font-medium" onClick={createNewSession}>+ New Chat</Button>
 
-          <div className="flex-1 space-y-2 text-sm overflow-y-auto">
+          <div className="flex-1 space-y-2 text-sm overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-neutral-700 scrollbar-track-neutral-900 hover:scrollbar-thumb-neutral-600">
             {sessions.map((session) => (
               <div
                 key={session.id}
-                className={`p - 2 rounded cursor - pointer ${activeSessionId === session.id
-                  ? "bg-neutral-800"
-                  : "hover:bg-neutral-800"
-                  } `}
-                onClick={() => setActiveSessionId(session.id)}
+                className={`p-3 rounded-lg cursor-pointer transition-all ${
+                  activeSessionId === session.id
+                    ? "bg-neutral-800 text-white font-medium"
+                    : "hover:bg-neutral-900 text-neutral-300"
+                }`}
+                onClick={() => {
+                  router.push(`/${session.id}`)
+                  if (typeof window !== "undefined") {
+                    sessionStorage.setItem("lastVisitedSessionId", session.id)
+                  }
+                }}
               >
                 {session.title || "Untitled Session"}
               </div>
@@ -850,7 +1388,7 @@ Use this as reference context for future responses. Do not repeat this content b
 
           <Button
             variant="ghost"
-            className="mt-4 text-red-400 hover:text-red-300 justify-start"
+            className="mt-4 text-neutral-400 hover:text-neutral-200 justify-start"
             onClick={deleteAllChats}
           >
             <Trash2 className="mr-2 h-4 w-4" /> Delete All Chats
@@ -859,61 +1397,124 @@ Use this as reference context for future responses. Do not repeat this content b
       )}
 
       {/* Main Area */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 flex-shrink-0">
+      <main className="flex-1 flex flex-col overflow-hidden min-w-0 h-screen">
+        {/* Header - Fixed */}
+        <header className="flex items-center justify-between px-4 py-3 border-b border-neutral-900 flex-shrink-0 bg-black sticky top-0 z-10">
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="text-white hover:bg-neutral-900"
           >
             {sidebarOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
           </Button>
 
-          <div className="flex gap-2">
-            <Button
-              variant={mode === "voice" ? "default" : "secondary"}
-              onClick={switchToVoice}
-              disabled={isSwitching || !activeSessionId}
-            >
-              Voice
-            </Button>
-            <Button
-              variant={mode === "chat" ? "default" : "secondary"}
-              onClick={switchToChat}
-              disabled={isSwitching || !activeSessionId}
-            >
-              Chat
-            </Button>
-          </div>
+          <Tabs
+            value={mode}
+            onValueChange={(value) => {
+              if (value === "voice" && mode !== "voice") {
+                switchToVoice()
+              } else if (value === "chat" && mode !== "chat") {
+                switchToChat()
+              }
+            }}
+          >
+            <TabsList className="bg-transparent border-0 p-1 gap-1">
+              <TabsTrigger
+                value="voice"
+                disabled={isSwitching || !activeSessionId}
+                className="text-white data-[state=inactive]:text-white data-[state=inactive]:opacity-70 data-[state=active]:bg-white data-[state=active]:text-black data-[state=active]:font-medium rounded-full px-4 py-1.5 transition-all duration-200"
+              >
+                Voice
+              </TabsTrigger>
+              <TabsTrigger
+                value="chat"
+                disabled={isSwitching || !activeSessionId}
+                className="text-white data-[state=inactive]:text-white data-[state=inactive]:opacity-70 data-[state=active]:bg-white data-[state=active]:text-black data-[state=active]:font-medium rounded-full px-4 py-1.5 transition-all duration-200"
+              >
+                Chat
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
 
           <div className="w-10" />
         </header>
 
-        {/* Conversation Area */}
-        <div className="flex-1 flex justify-center min-h-0 overflow-hidden">
-          <div className="w-full max-w-3xl h-full">
-            <Conversation className="h-full">
-              <ConversationContent className="p-6">
-                {messages.length === 0 ? (
-                  <ConversationEmptyState
-                    title="No messages yet"
-                    description="Start a conversation to see messages here"
-                  />
-                ) : (
-                  messages.map((m) => (
-                    <div
-                      key={m.id}
-                      className={`max - w - xl p - 3 rounded - lg mb - 2 ${m.role === "user"
-                        ? "ml-auto text-right bg-blue-600 text-white"
-                        : m.role === "assistant"
-                          ? "mr-auto text-left bg-neutral-800 text-neutral-200"
-                          : "mx-auto text-center text-xs text-neutral-500 bg-neutral-900/50" // System messages
-                        } `}
-                    >
-                      {m.content}
+        {/* Conversation Area - Scrollable Only */}
+        <div className="flex-1 flex justify-center min-h-0 overflow-hidden relative">
+          <div className="w-full max-w-4xl h-full flex flex-col">
+            {/* Context Panel - Uploaded Documents */}
+            {uploadedFiles.length > 0 && (
+              <div className="border-b border-neutral-800 flex-shrink-0">
+                <div
+                  className="px-6 py-3 flex items-center justify-between cursor-pointer hover:bg-neutral-900/50 transition-colors"
+                  onClick={() => setContextExpanded(!contextExpanded)}
+                >
+                  <div className="flex items-center gap-2 text-sm text-neutral-400">
+                    <Paperclip className="h-4 w-4" />
+                    <span>{uploadedFiles.length} document{uploadedFiles.length > 1 ? "s" : ""} attached</span>
+                  </div>
+                  {contextExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </div>
+                {contextExpanded && (
+                  <div className="px-6 pb-4 space-y-2">
+                    {uploadedFiles.map((file) => (
+                      <div key={file.id} className="bg-white border border-neutral-200 rounded-lg p-3 text-sm">
+                        <div className="font-medium text-black mb-1">{file.name}</div>
+                        {file.summary && (
+                          <div className="text-neutral-600 text-xs">{file.summary}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Messages - Only This Scrolls */}
+            <Conversation className="flex-1 pr-4 bg-black">
+              <ConversationContent className="p-8 pr-12 bg-black min-h-full">
+                {displayMessages.length === 0 ? (
+                  <ConversationEmptyState className="gap-4">
+                    <div className="space-y-2">
+                      <h1 className="text-3xl font-semibold text-white mb-2">
+                        Hey, I'm Alex 👋
+                      </h1>
+                      <p className="text-base text-neutral-300 max-w-md mx-auto">
+                        We'll work together to build an Ideal Customer Profile (ICP) for your company.
+                      </p>
+                      <p className="text-sm text-neutral-400 mt-2">
+                        Expect this to take around 15–20 minutes.
+                      </p>
                     </div>
-                  ))
+                  </ConversationEmptyState>
+                ) : (
+                  <div className="space-y-6">
+                    {displayMessages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={`flex ${
+                          msg.role === "user" ? "justify-end" : "justify-start"
+                        } animate-in fade-in slide-in-from-bottom-2 duration-300`}
+                      >
+                        {msg.role === "user" ? (
+                          // User message: Right-aligned bubble
+                          <div className="max-w-[60%] bg-orange-500 text-white rounded-2xl rounded-tr-sm px-5 py-3 shadow-sm">
+                            <div className="text-sm whitespace-pre-wrap break-words leading-relaxed text-left">
+                              {msg.content}
+                            </div>
+                          </div>
+                        ) : (
+                          // AI message: Left-aligned, no bubble, on background
+                          <div className="max-w-[70%]">
+                            <div className="text-sm whitespace-pre-wrap break-words leading-relaxed text-neutral-200">
+                              {msg.content}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </ConversationContent>
               <ConversationScrollButton />
@@ -921,102 +1522,110 @@ Use this as reference context for future responses. Do not repeat this content b
           </div>
         </div>
 
-        {/* Bottom Controls */}
-        {mode === "voice" ? (
-          <div className="relative py-10 border-t border-neutral-800 flex justify-center items-center flex-shrink-0 bg-neutral-950">
-            <div className="w-full max-w-3xl relative flex justify-center items-center">
-              {/* Pause/Resume - only show if voice session is active */}
-              {isVoiceSessionActive && (
-                <Button
-                  variant="secondary"
-                  size="icon"
-                  className="absolute left-4"
-                  onClick={handlePause}
-                  title={paused ? "Resume conversation" : "Pause conversation"}
-                >
-                  {paused ? <Play /> : <Pause />}
-                </Button>
-              )}
+        {/* Bottom Control Bar - Fixed at bottom, outside scrollable area */}
+        <div className="flex-shrink-0 bg-black border-t border-neutral-900">
+          <div className="max-w-4xl mx-auto">
+            {mode === "voice" ? (
+              <div className="p-6 flex items-center justify-center gap-4">
+                {/* Pause Button */}
+                {isVoiceSessionActive && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={handlePause}
+                    className="rounded-full w-12 h-12 text-white hover:bg-neutral-900"
+                  >
+                    {paused ? (
+                      <Play className="h-5 w-5" />
+                    ) : (
+                      <Pause className="h-5 w-5" />
+                    )}
+                  </Button>
+                )}
 
-              {/* Orb - clickable to start voice session */}
-              <div
-                onClick={handleOrbClick}
-                className={isSwitching ? "cursor-not-allowed opacity-50" : "cursor-pointer"}
-                title={isSwitching ? "Switching..." : isVoiceSessionActive ? "" : "Click to start voice conversation"}
-              >
-                <Orb
-                  className="w-28 h-28"
-                  agentState={agentState || (isVoiceSessionActive ? "listening" : null)}
+                {/* Orb */}
+                <div
+                  className="w-20 h-20 cursor-pointer"
+                  onClick={handleOrbClick}
+                >
+                  <Orb agentState={agentState} />
+                </div>
+
+                {/* Attach File Button */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-full w-12 h-12 text-white hover:bg-neutral-900"
+                  disabled={isUploading}
+                >
+                  <Paperclip className="h-5 w-5" />
+                </Button>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                  accept=".pdf,.doc,.docx,.txt"
                 />
               </div>
-
-              {/* Upload */}
-              <input
-                type="file"
-                ref={fileInputRef}
-                className="hidden"
-                onChange={handleFileUpload}
-                accept=".pdf,.docx,.txt,.jpg,.jpeg,.png"
-              />
-              <Button
-                variant="secondary"
-                size="icon"
-                className="absolute right-4"
-                disabled={isUploading}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip className={isUploading ? "animate-pulse" : ""} />
-              </Button>
-            </div>
+            ) : (
+              <div className="p-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex-1 relative">
+                    <textarea
+                      ref={chatInputRef}
+                      placeholder="Message Alex..."
+                      className="w-full border-0 rounded-xl px-4 py-3 pr-12 text-sm text-black placeholder-neutral-400 resize-none focus:outline-none focus:ring-2 focus:ring-neutral-500 focus:border-neutral-500 min-h-[52px] max-h-[200px] overflow-hidden transition-all"
+                      onInput={handleTextareaInput}
+                      onKeyDown={handleTextareaKeyDown}
+                      rows={1}
+                      style={{ overflowY: 'hidden', backgroundColor: 'var(--accent)', borderColor: 'rgba(0, 0, 0, 1)', borderWidth: '0px' }}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="absolute h-8 w-8 text-neutral-600 hover:text-black justify-start"
+                      style={{ left: '767px', top: '9px' }}
+                      disabled={isUploading}
+                    >
+                      <Paperclip className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Button
+                    onClick={() => {
+                      const text = chatInputRef.current?.value
+                      if (text?.trim()) {
+                        sendChatMessage(text)
+                        if (chatInputRef.current) {
+                          chatInputRef.current.value = ""
+                          chatInputRef.current.style.height = "auto"
+                        }
+                      }
+                    }}
+                    className="rounded-xl h-[52px] w-[51px] px-6 bg-neutral-700 text-white hover:bg-neutral-600 transition-colors font-medium flex items-center justify-center shadow-lg"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={handleFileUpload}
+                    accept=".pdf,.doc,.docx,.txt"
+                  />
+                </div>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="border-t border-neutral-800 p-4 flex justify-center flex-shrink-0 bg-neutral-950">
-            <div className="w-full max-w-3xl flex gap-2 items-center">
-              <input
-                placeholder="Type a message"
-                className="flex-1 bg-neutral-900 rounded px-4 py-2 outline-none"
-                disabled={isSwitching}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !isSwitching) {
-                    sendChatMessage(e.currentTarget.value)
-                    e.currentTarget.value = ""
-                  }
-                }}
-              />
-              <Button variant="secondary" size="icon" disabled={isSwitching}>
-                <Mic />
-              </Button>
-              <input
-                type="file"
-                ref={fileInputRef}
-                className="hidden"
-                onChange={handleFileUpload}
-                accept=".pdf,.docx,.txt,.jpg,.jpeg,.png"
-              />
-              <Button
-                variant="secondary"
-                size="icon"
-                disabled={isUploading || isSwitching}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip className={isUploading ? "animate-pulse" : ""} />
-              </Button>
-              <Button 
-                onClick={() => {
-                  const input = document.querySelector("input[placeholder='Type a message']") as HTMLInputElement
-                  if (input && !isSwitching) {
-                    sendChatMessage(input.value)
-                    input.value = ""
-                  }
-                }}
-                disabled={isSwitching}
-              >
-                <Send className="mr-2 h-4 w-4" /> Send
-              </Button>
-            </div>
-          </div>
-        )}
+        </div>
       </main>
     </div>
   )
+}
+
+export default function HomePage() {
+  return <VoiceChatUI initialSessionId={null} />
 }
