@@ -1,0 +1,5 @@
+This is a test document about Project Orion.
+Project Orion is a secret initiative to build a base on Mars by 2030.
+The base will be named "Ares Prime".
+It will host 50 scientists and 20 engineers.
+The primary mission is to search for ancient microbial life.
