@@ -71,12 +71,16 @@ export class AudioPlayer {
                   console.error('[AudioPlayer] Error in queue continuation:', err);
                 });
               } else {
+                // BUG FIX: Set isPlaying to false BEFORE calling onEnded
+                // This ensures state is correct when callback checks it
                 this.isPlaying = false;
                 this.onEndedCallback?.();
               }
             });
           }, 0);
         } else {
+          // BUG FIX: Set isPlaying to false BEFORE calling onEnded
+          // This ensures state is correct when callback checks it
           this.isPlaying = false;
           this.onEndedCallback?.();
         }

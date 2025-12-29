@@ -53,6 +53,17 @@ export class TextBuffer {
       }
     }
 
+    // NEW: For first chunk, flush earlier to start speaking faster
+    // This reduces latency when OpenAI starts streaming
+    if (this.buffer.length >= 20 && this.buffer.length < this.minChars) {
+      // Check for word boundaries (space) to avoid cutting words
+      const lastSpaceIndex = this.buffer.lastIndexOf(' ');
+      if (lastSpaceIndex > 10) {
+        // We have enough text and a word boundary, flush early
+        return true;
+      }
+    }
+
     return false;
   }
 

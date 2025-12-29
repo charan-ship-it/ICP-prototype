@@ -1,7 +1,7 @@
 "use client";
 
-import { Play, Pause, User, Mic, MicOff } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Play, Pause, User, Mic, MicOff, AlertCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { createVAD } from "@/lib/vad";
 
 interface VoicePanelProps {
@@ -43,6 +43,7 @@ export default function VoicePanel({
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const vadInitializedRef = useRef<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Initialize VAD when conversation starts and we're in listening state
   useEffect(() => {
@@ -133,26 +134,35 @@ export default function VoicePanel({
 
   const handleConversationToggle = async () => {
     if (isConversationActive) {
+      setErrorMessage(null); // Clear error when ending
       await endConversation();
     } else {
+      setErrorMessage(null); // Clear previous errors
       try {
         await startConversation();
       } catch (error) {
         console.error('Failed to start conversation:', error);
+        // Show user-friendly error message
+        const errorMsg = error instanceof Error ? error.message : 'Failed to start conversation';
+        setErrorMessage(errorMsg);
       }
     }
   };
 
   const handlePlayPause = () => {
+    // BUG FIX: Only allow pause/resume when conversation is active
+    // Don't start conversation from play button
     if (!isConversationActive) {
-      handleConversationToggle();
-      return;
+      return; // Do nothing if conversation not started
     }
     
-    if (voiceState === 'idle') {
-      resumeConversation();
-    } else {
+    // Pause when actively listening or speaking
+    if (voiceState === 'listening' || voiceState === 'speaking') {
       pauseConversation();
+    } 
+    // Resume when paused (idle state during active conversation)
+    else if (voiceState === 'idle') {
+      resumeConversation();
     }
   };
 
@@ -264,27 +274,31 @@ export default function VoicePanel({
           <div className="flex items-center justify-center gap-2">
             <button
               onClick={handlePlayPause}
-              className="rounded-full p-3 hover:bg-accent border border-border transition-all hover:scale-105 active:scale-95"
-                  aria-label={
-                    isConversationActive && voiceState === 'idle' ? "Resume" : 
-                    isConversationActive ? "Pause" : 
-                    "Start Conversation"
-                  }
-                  type="button"
-                >
-                  {isConversationActive && voiceState === 'idle' ? (
-                    <Play className="h-5 w-5 ml-0.5" />
-                  ) : isConversationActive ? (
-                    <Pause className="h-5 w-5" />
-                  ) : (
-                    <Play className="h-5 w-5 ml-0.5" />
-                  )}
+              disabled={!isConversationActive}
+              className="rounded-full p-3 hover:bg-accent border border-border transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-label={
+                !isConversationActive ? "Start conversation first" :
+                voiceState === 'idle' ? "Resume" : "Pause"
+              }
+              type="button"
+            >
+              {voiceState === 'idle' && isConversationActive ? (
+                <Play className="h-5 w-5 ml-0.5" />
+              ) : (
+                <Pause className="h-5 w-5" />
+              )}
             </button>
           </div>
         </div>
 
         {/* Conversation Toggle */}
-        <div className="pt-4 border-t border-border">
+        <div className="pt-4 border-t border-border space-y-3">
+          {errorMessage && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+              <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-destructive leading-relaxed">{errorMessage}</p>
+            </div>
+          )}
           <button
             onClick={handleConversationToggle}
                 className={`w-full rounded-lg px-4 py-3 text-sm font-medium transition-colors shadow-sm ${

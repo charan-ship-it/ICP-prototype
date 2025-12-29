@@ -261,9 +261,9 @@ export default function Home() {
         chatId = newChat.id;
         
         // Set both ref (for voice conversation stability) and state (for UI)
-        conversationChatIdRef.current = chatId;
+        conversationChatIdRef.current = chatId || null;
         setSelectedChatId(chatId);
-        voiceLogger.setChatId(chatId);
+        voiceLogger.setChatId(chatId || null);
         voiceLogger.log('ChatId', `Using chatId: ${chatId}`, { conversationId: conversationIdRef.current, isNew: true });
         
         isNewChat = true;
@@ -504,7 +504,9 @@ export default function Home() {
                   }
                   
                   // Reload ICP data and chats
-                  await loadICPData(chatId);
+                  if (chatId) {
+                    await loadICPData(chatId);
+                  }
                   if (sessionId) loadChats(sessionId);
                 } else if (data.content) {
                   // Streaming content chunk
@@ -515,6 +517,17 @@ export default function Home() {
                       conversationId: conversationIdRef.current, 
                       chatId 
                     });
+                    voiceLogger.log('OpenAI', 'First token received', { 
+                      chatId, 
+                      conversationId: conversationIdRef.current, 
+                      timeToFirstToken 
+                    });
+                    
+                    // CRITICAL FIX: Prepare TTS immediately when first token arrives
+                    // This ensures TTS starts speaking in parallel with OpenAI streaming
+                    if (voiceHook.isActive && voiceHook.prepareTTS) {
+                      voiceHook.prepareTTS();
+                    }
                   }
                   
                   fullContent += data.content;
@@ -527,8 +540,10 @@ export default function Home() {
                     )
                   );
                   
-                  // Stream to TTS immediately
-                  voiceHook.streamToTTS(data.content);
+                  // Stream to TTS immediately (will buffer but start speaking quickly)
+                  if (voiceHook.isActive) {
+                    voiceHook.streamToTTS(data.content);
+                  }
                 } else if (data.error) {
                   throw new Error(data.error);
                 }
@@ -545,7 +560,9 @@ export default function Home() {
       // when data.done is true and data.message is received
 
       // Reload ICP data to get updated progress
-      await loadICPData(chatId);
+      if (chatId) {
+        await loadICPData(chatId);
+      }
 
       // Reload chats to update last message
       if (sessionId) loadChats(sessionId);
@@ -602,15 +619,17 @@ export default function Home() {
   }, [voiceHook]);
 
   // Wrapper for endConversation to clear conversation context
-  const handleEndConversation = useCallback(() => {
+  const handleEndConversation = useCallback(async () => {
     voiceLogger.log('Conversation', 'Ending conversation', { 
       conversationId: conversationIdRef.current, 
       chatId: conversationChatIdRef.current 
     });
     
-    // Clear conversation context
-    conversationChatIdRef.current = null;
+    // CRITICAL FIX: Only clear conversationId, NOT chatId
+    // This preserves the chat across pause/resume cycles
+    // Only clear chatId if user explicitly wants a new conversation
     conversationIdRef.current = null;
+    // DO NOT clear conversationChatIdRef.current here - preserve chat across pause/resume
     voiceLogger.clearContext();
     
     // Call voice hook's endConversation

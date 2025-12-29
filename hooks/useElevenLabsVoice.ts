@@ -139,7 +139,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
             if (isActiveRef.current && stateRef.current === 'speaking') {
               log('Audio playback ended, returning to listening');
               
-              // Reset TTS timer for next speech segment
+              // CRITICAL FIX: Reset TTS timer for next speech segment to prevent duplicate contexts
               ttsFirstChunkTimeRef.current = null;
               
               setState('listening');
@@ -158,10 +158,18 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         throw new Error(`Audio player initialization failed: ${error.message}`);
       }
     } else {
+      // FIX: Only re-initialize if audio context is closed/invalid
+      // Don't re-initialize if already working
       try {
-        await audioPlayerRef.current.initialize();
+        // Check if audio context is still valid
+        const audioContext = (audioPlayerRef.current as any).audioContext;
+        if (!audioContext || audioContext.state === 'closed') {
+          await audioPlayerRef.current.initialize();
+        }
+        // Otherwise, audio player is already initialized and working
       } catch (error: any) {
         log('Failed to re-initialize audio player:', error);
+        // Don't throw - audio player might still work
       }
     }
 
@@ -206,7 +214,18 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       return stream;
     } catch (error: any) {
       log('Microphone capture error:', error);
-      throw new Error(`Failed to access microphone: ${error.message}`);
+      // Provide user-friendly error messages
+      let errorMessage = 'Failed to access microphone';
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        errorMessage = 'Microphone permission denied. Please allow microphone access in your browser settings.';
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        errorMessage = 'No microphone found. Please connect a microphone and try again.';
+      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+        errorMessage = 'Microphone is already in use by another application.';
+      } else if (error.message) {
+        errorMessage = `Failed to access microphone: ${error.message}`;
+      }
+      throw new Error(errorMessage);
     }
   }, [log]);
 
@@ -257,6 +276,27 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
             // Update UI with accumulated transcript
             setTranscript(accumulatedTranscriptRef.current);
             setLiveTranscript(''); // Clear interim
+            
+            // CRITICAL FIX: Send transcript immediately when we get a final result
+            // Don't wait for VAD pause detection - the browser already detected the pause
+            if (accumulatedTranscriptRef.current.trim().length > 0 && isActiveRef.current) {
+              const finalTranscript = accumulatedTranscriptRef.current.trim();
+              voiceLogger.log('LiveTranscription', `Auto-sending transcript: "${finalTranscript.substring(0, 50)}${finalTranscript.length > 50 ? '...' : ''}"`, context);
+              
+              // Reset for next utterance
+              accumulatedTranscriptRef.current = '';
+              setTranscript('');
+              setLiveTranscript('');
+              
+              // Update state to thinking
+              const previousState = stateRef.current;
+              setState('thinking');
+              stateRef.current = 'thinking';
+              voiceLogger.stateTransition(previousState, 'thinking', 'transcript received (LiveTranscription final)', context);
+              
+              // Send transcript to parent immediately
+              onTranscriptComplete?.(finalTranscript);
+            }
           } else {
             // Interim result - show live transcription
             voiceLogger.log('LiveTranscription', `Interim transcript: "${text}"`, context);
@@ -436,6 +476,9 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     accumulatedTranscriptRef.current = '';
     setTranscript('');
     setLiveTranscript('');
+    
+    // CRITICAL FIX: Reset TTS timer on barge-in to prevent duplicate contexts
+    ttsFirstChunkTimeRef.current = null;
 
     setTimeout(() => {
       isBargingInRef.current = false;
@@ -445,7 +488,41 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   }, [onBargeIn]);
 
   /**
-   * Stream text to TTS (buffered)
+   * Prepare TTS context immediately (called when OpenAI starts streaming)
+   * This ensures TTS is ready to speak as soon as first chunk arrives
+   */
+  const prepareTTS = useCallback(() => {
+    if (!isActiveRef.current || !wsManagerRef.current) {
+      return;
+    }
+
+    // Create TTS context immediately if not already created
+    if (ttsFirstChunkTimeRef.current === null) {
+      ttsFirstChunkTimeRef.current = Date.now();
+      const context = voiceLogger.getContext();
+      voiceLogger.log('TTS', 'Preparing TTS context (OpenAI streaming started)', context);
+      
+      // CRITICAL FIX: Close any existing context before creating a new one to prevent duplicates
+      if (wsManagerRef.current.getConnectionStatus()) {
+        wsManagerRef.current.closeCurrentContext();
+        voiceLogger.log('TTS', 'Closed previous context before creating new one', context);
+      }
+      
+      // Create context immediately so TTS is ready
+      wsManagerRef.current.createContext();
+      
+      // Transition to thinking state (AI is processing)
+      if (stateRef.current === 'listening') {
+        const previousState = stateRef.current;
+        setState('thinking');
+        stateRef.current = 'thinking';
+        voiceLogger.stateTransition(previousState, 'thinking', 'OpenAI streaming started', context);
+      }
+    }
+  }, []);
+
+  /**
+   * Stream text to TTS (buffered) - MODIFIED for immediate start
    */
   const streamToTTS = useCallback((text: string) => {
     if (isBargingInRef.current) {
@@ -458,26 +535,43 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       return;
     }
 
-    // Create context on first text chunk (lazy initialization to avoid timeout errors)
-    if (ttsFirstChunkTimeRef.current === null && stateRef.current !== 'speaking') {
-      ttsFirstChunkTimeRef.current = Date.now();
-      const context = voiceLogger.getContext();
-      voiceLogger.log('TTS', 'Starting - creating context', context);
-      
-      // Create a new context for this speech segment
-      wsManagerRef.current.createContext();
+    // Ensure TTS context is created on first chunk
+    if (ttsFirstChunkTimeRef.current === null) {
+      prepareTTS();
     }
 
+    // Transition to speaking state when we start receiving content
     if (stateRef.current !== 'speaking' && stateRef.current !== 'thinking') {
       const previousState = stateRef.current;
       setState('speaking');
       stateRef.current = 'speaking';
       const context = voiceLogger.getContext();
       voiceLogger.stateTransition(previousState, 'speaking', 'TTS started', context);
+    } else if (stateRef.current === 'thinking') {
+      // Transition from thinking to speaking when first content arrives
+      const previousState = stateRef.current;
+      setState('speaking');
+      stateRef.current = 'speaking';
+      const context = voiceLogger.getContext();
+      voiceLogger.stateTransition(previousState, 'speaking', 'First TTS content received', context);
     }
 
+    // Add to buffer - but if this is the first chunk and buffer is empty,
+    // send immediately to start speaking faster
+    const bufferLength = textBufferRef.current.getLength();
     textBufferRef.current.add(text);
-  }, []);
+    
+    // If buffer was empty and we just added text, try to flush immediately
+    // This ensures TTS starts speaking as soon as possible
+    if (bufferLength === 0 && textBufferRef.current.getLength() > 0) {
+      // Check if we can flush immediately (even if below minChars threshold)
+      // This is a special case for the first chunk to reduce latency
+      const currentBuffer = textBufferRef.current.getBuffer();
+      if (currentBuffer.length >= 20) { // Lower threshold for first chunk
+        textBufferRef.current.flush();
+      }
+    }
+  }, [prepareTTS]);
 
   /**
    * Flush remaining text buffer to TTS
@@ -508,7 +602,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       // Initialize TTS
       await initializeTTS();
 
-      // Start microphone
+      // Start microphone - this might fail if permission denied
       await startMic();
 
       // Initialize and start live transcription IMMEDIATELY
@@ -535,11 +629,35 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       log('Conversation started, live transcription active, listening...');
     } catch (error: any) {
       log('Failed to start conversation:', error);
+      // CRITICAL: Reset state before throwing error
       isActiveRef.current = false;
       setIsActive(false);
       setState('error');
       stateRef.current = 'error';
+      
+      // Cleanup any partially initialized resources
+      if (liveTranscriptionRef.current) {
+        try {
+          liveTranscriptionRef.current.stop();
+          liveTranscriptionRef.current = null;
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      }
+      if (streamRef.current) {
+        try {
+          streamRef.current.getTracks().forEach(track => track.stop());
+          streamRef.current = null;
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      }
+      
+      // Call error callback
       onError?.(error instanceof Error ? error : new Error(String(error)));
+      
+      // Re-throw so UI can catch and display
+      throw error;
     }
   }, [initializeTTS, startMic, initializeLiveTranscription, startRecording, onError, log]);
 
@@ -802,6 +920,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     resumeConversation,
     streamToTTS,
     flushTTS,
+    prepareTTS,
     handleBargeIn,
     setOpenAIAbortController,
     detectSpeechStart,
