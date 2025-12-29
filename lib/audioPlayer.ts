@@ -57,15 +57,26 @@ export class AudioPlayer {
       // Handle ended
       source.onended = () => {
         this.sourceNode = null;
+        
+        // CRITICAL FIX: Check if we're stopping - if so, don't process queue
+        if (this.isStopping) {
+          return;
+        }
+        
         if (this.audioQueue.length > 0) {
           // Play next chunk in queue (use setTimeout to prevent stack overflow)
           const nextChunk = this.audioQueue.shift()!;
           setTimeout(() => {
+            // Check again before playing (in case stop was called during setTimeout)
+            if (this.isStopping) {
+              return;
+            }
+            
             this.playChunk(nextChunk).catch((error) => {
               console.error('[AudioPlayer] Error playing next chunk:', error);
               this.onErrorCallback?.(error instanceof Error ? error : new Error(String(error)));
               // Continue with next chunk if available
-              if (this.audioQueue.length > 0) {
+              if (this.audioQueue.length > 0 && !this.isStopping) {
                 const chunk = this.audioQueue.shift()!;
                 this.playChunk(chunk).catch((err) => {
                   console.error('[AudioPlayer] Error in queue continuation:', err);
@@ -120,9 +131,15 @@ export class AudioPlayer {
   }
 
   /**
-   * Stop playback
+   * Stop playback - CRITICAL FIX: Prevent race condition
    */
   stop(): void {
+    // CRITICAL FIX: Set flag FIRST to prevent onended from processing queue
+    this.isStopping = true;
+    
+    // Clear queue BEFORE stopping node to prevent race condition
+    this.audioQueue = [];
+    
     if (this.sourceNode) {
       try {
         this.sourceNode.stop();
@@ -131,9 +148,14 @@ export class AudioPlayer {
       }
       this.sourceNode = null;
     }
-    this.audioQueue = [];
+    
     this.isPlaying = false;
     this.isPaused = false;
+    
+    // Reset flag after a short delay to allow onended to complete
+    setTimeout(() => {
+      this.isStopping = false;
+    }, 50);
   }
 
   /**

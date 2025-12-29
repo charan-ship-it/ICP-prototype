@@ -13,6 +13,7 @@ interface UseElevenLabsVoiceOptions {
   onTranscriptComplete?: (text: string) => void;
   onBargeIn?: () => void;
   onError?: (error: Error) => void;
+  onTextSpoken?: (spokenText: string) => void; // New: callback when text is being spoken
   sessionId: string | null;
   voiceId?: string;
   modelId?: string;
@@ -23,6 +24,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     onTranscriptComplete,
     onBargeIn,
     onError,
+    onTextSpoken,
     sessionId,
     voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb',
     modelId = 'eleven_multilingual_v2',
@@ -48,6 +50,8 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const isBargingInRef = useRef<boolean>(false);
   const ttsFirstChunkTimeRef = useRef<number | null>(null);
   const accumulatedTranscriptRef = useRef<string>(''); // For accumulating interim results
+  const fullTextSentToTTSRef = useRef<string>(''); // All text sent to TTS (cumulative)
+  const hasStartedSpeakingRef = useRef<boolean>(false); // Track if we've started displaying text
 
   const log = useCallback((message: string, ...args: any[]) => {
     const context = voiceLogger.getContext();
@@ -97,6 +101,19 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           voiceLogger.log('TTS', 'First audio chunk received', context);
           ttsFirstChunkTimeRef.current = null;
         }
+        
+        // CRITICAL FIX: On FIRST audio chunk, display ALL text sent to TTS so far
+        // This ensures text appears when audio starts, not before
+        // ElevenLabs sends many audio chunks per text chunk, so we only update on first
+        if (!hasStartedSpeakingRef.current && fullTextSentToTTSRef.current.length > 0) {
+          hasStartedSpeakingRef.current = true;
+          onTextSpoken?.(fullTextSentToTTSRef.current);
+          voiceLogger.log('TTS', `Started speaking, displaying text: "${fullTextSentToTTSRef.current.substring(0, 50)}${fullTextSentToTTSRef.current.length > 50 ? '...' : ''}"`, context);
+        } else if (hasStartedSpeakingRef.current && fullTextSentToTTSRef.current.length > 0) {
+          // Continue updating as more text is sent to TTS (streaming)
+          onTextSpoken?.(fullTextSentToTTSRef.current);
+        }
+        
         audioPlayerRef.current.queueChunk(chunk.audio);
       }
     });
@@ -142,6 +159,10 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
               // CRITICAL FIX: Reset TTS timer for next speech segment to prevent duplicate contexts
               ttsFirstChunkTimeRef.current = null;
               
+              // Reset text tracking for next response
+              fullTextSentToTTSRef.current = '';
+              hasStartedSpeakingRef.current = false;
+              
               setState('listening');
               stateRef.current = 'listening';
             }
@@ -183,6 +204,15 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       textBufferRef.current.onFlush((text) => {
         if (wsManagerRef.current && isActiveRef.current) {
           log('Flushing text buffer to TTS:', text.substring(0, 50) + '...');
+          
+          // CRITICAL: Accumulate all text sent to TTS
+          fullTextSentToTTSRef.current += text;
+          
+          // If audio has already started, update display immediately as more text arrives
+          if (hasStartedSpeakingRef.current) {
+            onTextSpoken?.(fullTextSentToTTSRef.current);
+          }
+          
           wsManagerRef.current.sendText(text, false);
         }
       });
@@ -479,6 +509,10 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     
     // CRITICAL FIX: Reset TTS timer on barge-in to prevent duplicate contexts
     ttsFirstChunkTimeRef.current = null;
+    
+    // Reset text tracking for synchronized display
+    fullTextSentToTTSRef.current = '';
+    hasStartedSpeakingRef.current = false;
 
     setTimeout(() => {
       isBargingInRef.current = false;
@@ -721,6 +755,10 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     accumulatedTranscriptRef.current = '';
     
     ttsFirstChunkTimeRef.current = null;
+    
+    // Reset text tracking for synchronized display
+    fullTextSentToTTSRef.current = '';
+    hasStartedSpeakingRef.current = false;
 
     voiceLogger.log('Conversation', 'Ended', context);
   }, [stopMic]);

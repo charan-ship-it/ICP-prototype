@@ -160,19 +160,34 @@ Focus on the next incomplete section: ${incompleteSections[0] || 'All sections a
 
                   if (saveError) {
                     console.error('Error saving AI message:', saveError);
-                    controller.enqueue(
-                      new TextEncoder().encode(
-                        `data: ${JSON.stringify({ error: 'Failed to save message' })}\n\n`
-                      )
-                    );
+                    try {
+                      controller.enqueue(
+                        new TextEncoder().encode(
+                          `data: ${JSON.stringify({ error: 'Failed to save message' })}\n\n`
+                        )
+                      );
+                    } catch (e) {
+                      // Controller already closed (client disconnected/aborted)
+                      console.log('Client disconnected before final message could be sent');
+                    }
                   } else {
-                    controller.enqueue(
-                      new TextEncoder().encode(
-                        `data: ${JSON.stringify({ done: true, message: savedMessage })}\n\n`
-                      )
-                    );
+                    try {
+                      controller.enqueue(
+                        new TextEncoder().encode(
+                          `data: ${JSON.stringify({ done: true, message: savedMessage })}\n\n`
+                        )
+                      );
+                    } catch (e) {
+                      // Controller already closed (client disconnected/aborted)
+                      console.log('Client disconnected before final message could be sent');
+                    }
                   }
-                  controller.close();
+                  
+                  try {
+                    controller.close();
+                  } catch (e) {
+                    // Already closed, ignore
+                  }
                   return;
                 }
 
@@ -181,11 +196,17 @@ Focus on the next incomplete section: ${incompleteSections[0] || 'All sections a
                   const content = json.choices[0]?.delta?.content || '';
                   if (content) {
                     fullContent += content;
-                    controller.enqueue(
-                      new TextEncoder().encode(
-                        `data: ${JSON.stringify({ content })}\n\n`
-                      )
-                    );
+                    try {
+                      controller.enqueue(
+                        new TextEncoder().encode(
+                          `data: ${JSON.stringify({ content })}\n\n`
+                        )
+                      );
+                    } catch (enqueueError) {
+                      // Controller closed (client disconnected/aborted) - stop processing
+                      console.log('Client disconnected, stopping stream processing');
+                      return;
+                    }
                   }
                 } catch (e) {
                   // Skip invalid JSON

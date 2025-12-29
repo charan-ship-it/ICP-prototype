@@ -56,6 +56,22 @@ export default function Home() {
         });
       }
     },
+    onTextSpoken: (spokenText) => {
+      // CRITICAL: Update message display with text that's being spoken
+      // This synchronizes text display with audio playback
+      // Note: We don't check voiceHook.isActive here because this callback
+      // is only called when voice is active (from the voice hook itself)
+      setStreamingAIContent(spokenText);
+      setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          return prev.map((msg, idx) => 
+            idx === prev.length - 1 ? { ...msg, content: spokenText } : msg
+          );
+        }
+        return prev;
+      });
+    },
     onBargeIn: () => {
       console.log('[app/page.tsx] Barge-in detected, aborting OpenAI stream');
       if (currentAbortControllerRef.current) {
@@ -531,14 +547,19 @@ export default function Home() {
                   }
                   
                   fullContent += data.content;
-                  setStreamingAIContent(fullContent); // Update streaming content for UI
-                  setMessages((prev) =>
-                    prev.map(msg =>
-                      msg.id === messageId
-                        ? { ...msg, content: fullContent }
-                        : msg
-                    )
-                  );
+                  
+                  // CRITICAL: In voice mode, don't update message display immediately
+                  // Let onTextSpoken callback handle it (synchronized with audio)
+                  if (!voiceHook.isActive) {
+                    setStreamingAIContent(fullContent); // Update streaming content for UI
+                    setMessages((prev) =>
+                      prev.map(msg =>
+                        msg.id === messageId
+                          ? { ...msg, content: fullContent }
+                          : msg
+                      )
+                    );
+                  }
                   
                   // Stream to TTS immediately (will buffer but start speaking quickly)
                   if (voiceHook.isActive) {
