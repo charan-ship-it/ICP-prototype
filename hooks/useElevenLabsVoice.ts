@@ -107,14 +107,18 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         // ElevenLabs sends many audio chunks per text chunk, so we only update on first
         if (!hasStartedSpeakingRef.current && fullTextSentToTTSRef.current.length > 0) {
           hasStartedSpeakingRef.current = true;
+          console.log('[onAudioChunk] First audio chunk - displaying text:', fullTextSentToTTSRef.current.substring(0, 100));
           onTextSpoken?.(fullTextSentToTTSRef.current);
           voiceLogger.log('TTS', `Started speaking, displaying text: "${fullTextSentToTTSRef.current.substring(0, 50)}${fullTextSentToTTSRef.current.length > 50 ? '...' : ''}"`, context);
         } else if (hasStartedSpeakingRef.current && fullTextSentToTTSRef.current.length > 0) {
           // Continue updating as more text is sent to TTS (streaming)
+          console.log('[onAudioChunk] Updating text:', fullTextSentToTTSRef.current.length, 'chars');
           onTextSpoken?.(fullTextSentToTTSRef.current);
         }
         
         audioPlayerRef.current.queueChunk(chunk.audio);
+      } else {
+        console.log('[onAudioChunk] Skipped - isActive:', isActiveRef.current, 'isBargingIn:', isBargingInRef.current, 'hasPlayer:', !!audioPlayerRef.current);
       }
     });
 
@@ -207,10 +211,14 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           
           // CRITICAL: Accumulate all text sent to TTS
           fullTextSentToTTSRef.current += text;
+          console.log('[textBuffer.onFlush] Total text accumulated:', fullTextSentToTTSRef.current.length, 'chars');
           
           // If audio has already started, update display immediately as more text arrives
           if (hasStartedSpeakingRef.current) {
+            console.log('[textBuffer.onFlush] Audio already started, updating display');
             onTextSpoken?.(fullTextSentToTTSRef.current);
+          } else {
+            console.log('[textBuffer.onFlush] Waiting for first audio chunk before displaying');
           }
           
           wsManagerRef.current.sendText(text, false);

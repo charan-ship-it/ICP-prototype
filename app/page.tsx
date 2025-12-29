@@ -59,18 +59,31 @@ export default function Home() {
     onTextSpoken: (spokenText) => {
       // CRITICAL: Update message display with text that's being spoken
       // This synchronizes text display with audio playback
-      // Note: We don't check voiceHook.isActive here because this callback
-      // is only called when voice is active (from the voice hook itself)
-      setStreamingAIContent(spokenText);
-      setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg && lastMsg.role === 'assistant') {
-          return prev.map((msg, idx) => 
-            idx === prev.length - 1 ? { ...msg, content: spokenText } : msg
-          );
-        }
-        return prev;
-      });
+      try {
+        setStreamingAIContent(spokenText);
+        setMessages((prev) => {
+          // Find the most recent assistant message (streaming message)
+          const lastAssistantIndex = prev.length - 1;
+          const lastMsg = prev[lastAssistantIndex];
+          
+          if (lastMsg && lastMsg.role === 'assistant') {
+            const updated = [...prev];
+            updated[lastAssistantIndex] = { ...lastMsg, content: spokenText };
+            return updated;
+          }
+          
+          // If no assistant message exists, create one (shouldn't happen, but safety)
+          console.warn('[onTextSpoken] No assistant message found, creating one');
+          return [...prev, {
+            id: `spoken-${Date.now()}`,
+            role: 'assistant' as const,
+            content: spokenText,
+            timestamp: new Date(),
+          }];
+        });
+      } catch (error) {
+        console.error('[onTextSpoken] Error updating message:', error);
+      }
     },
     onBargeIn: () => {
       console.log('[app/page.tsx] Barge-in detected, aborting OpenAI stream');
