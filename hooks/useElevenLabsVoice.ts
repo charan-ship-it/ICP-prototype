@@ -158,7 +158,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         if (audioPlayerRef.current) {
           audioPlayerRef.current.onEnded(() => {
             if (isActiveRef.current && stateRef.current === 'speaking') {
-              log('Audio playback ended, returning to listening');
+              log('Audio playback ended, pausing to wait for user response');
               
               // CRITICAL FIX: Reset TTS timer for next speech segment to prevent duplicate contexts
               ttsFirstChunkTimeRef.current = null;
@@ -167,8 +167,16 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
               fullTextSentToTTSRef.current = '';
               hasStartedSpeakingRef.current = false;
               
-              setState('listening');
-              stateRef.current = 'listening';
+              // FIX: After agent finishes speaking, pause (idle) instead of immediately listening
+              // This gives user time to process and respond
+              // User can resume/pause button or start speaking (VAD will detect)
+              setState('idle');
+              stateRef.current = 'idle';
+              
+              // Stop live transcription temporarily - will resume when user starts speaking
+              if (liveTranscriptionRef.current) {
+                liveTranscriptionRef.current.stop();
+              }
             }
           });
 
@@ -597,6 +605,9 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       voiceLogger.stateTransition(previousState, 'speaking', 'First TTS content received', context);
     }
 
+    // Log TTS input for debugging
+    console.log('[TTS] Streaming text chunk:', text.substring(0, 100), `(${text.length} chars)`);
+    
     // Add to buffer - but if this is the first chunk and buffer is empty,
     // send immediately to start speaking faster
     const bufferLength = textBufferRef.current.getLength();
@@ -635,6 +646,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       return;
     }
 
+    console.log('[Voice Mode] Starting conversation with sessionId:', sessionId);
     log('Starting conversation');
     isActiveRef.current = true;
     setIsActive(true);
@@ -873,7 +885,21 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
    * Detect speech start (VAD callback)
    */
   const detectSpeechStart = useCallback(async () => {
-    if (stateRef.current === 'listening' && isActiveRef.current) {
+    if (stateRef.current === 'idle' && isActiveRef.current) {
+      // User starts speaking after agent finished - resume listening
+      const context = voiceLogger.getContext();
+      voiceLogger.log('VAD', 'Speech start detected after pause - resuming listening', context);
+      log('Speech start detected after pause - resuming listening');
+      
+      // Resume live transcription
+      if (liveTranscriptionRef.current) {
+        liveTranscriptionRef.current.start();
+      }
+      
+      // Transition to listening state
+      setState('listening');
+      stateRef.current = 'listening';
+    } else if (stateRef.current === 'listening' && isActiveRef.current) {
       const context = voiceLogger.getContext();
       voiceLogger.log('VAD', 'Speech start detected (user started speaking)', context);
       log('Speech start detected (VAD)');

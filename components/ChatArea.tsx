@@ -1,13 +1,12 @@
 "use client";
 
-import { MessageCircle, Sparkles, Mic, Brain, Volume2 } from "lucide-react";
+import { MessageCircle, Sparkles, Mic, Brain, Volume2, FileText } from "lucide-react";
+import FileAttachmentCard from "./FileAttachmentCard";
+import ICPConfirmationCard from "./ICPConfirmationCard";
+import { MessageDisplay } from "@/types/chat";
+import { ICPData } from "@/types/icp";
 
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp?: Date;
-}
+interface Message extends MessageDisplay {}
 
 interface ChatAreaProps {
   messages?: Message[];
@@ -16,6 +15,46 @@ interface ChatAreaProps {
   isVoiceActive?: boolean;
   voiceTranscript?: string;
   voiceLiveTranscript?: string;
+  onConfirmSection?: (section: string) => void;
+  onEditField?: (field: keyof import("@/types/icp").ICPData, value: string) => void;
+}
+
+// Helper function to get section fields from extracted ICP data
+function getSectionFields(section: string, extractedFields: any): { key: keyof ICPData; label: string; value: string | undefined }[] {
+  const sectionMap: Record<string, { key: keyof ICPData; label: string }[]> = {
+    'Company Basics': [
+      { key: 'company_name', label: 'Company Name' },
+      { key: 'company_size', label: 'Company Size' },
+      { key: 'industry', label: 'Industry' },
+      { key: 'location', label: 'Location' },
+    ],
+    'Target Customer': [
+      { key: 'target_customer_type', label: 'Customer Type' },
+      { key: 'target_demographics', label: 'Demographics' },
+      { key: 'target_psychographics', label: 'Psychographics' },
+    ],
+    'Problem & Pain': [
+      { key: 'main_problems', label: 'Main Problems' },
+      { key: 'pain_points', label: 'Pain Points' },
+      { key: 'current_solutions', label: 'Current Solutions' },
+    ],
+    'Buying Process': [
+      { key: 'decision_makers', label: 'Decision Makers' },
+      { key: 'buying_process_steps', label: 'Buying Process Steps' },
+      { key: 'evaluation_criteria', label: 'Evaluation Criteria' },
+    ],
+    'Budget & Decision Maker': [
+      { key: 'budget_range', label: 'Budget Range' },
+      { key: 'decision_maker_role', label: 'Decision Maker Role' },
+      { key: 'approval_process', label: 'Approval Process' },
+    ],
+  };
+  
+  const fields = sectionMap[section] || [];
+  return fields.map(f => ({
+    ...f,
+    value: extractedFields[f.key],
+  })).filter(f => f.value);
 }
 
 export default function ChatArea({ 
@@ -25,6 +64,8 @@ export default function ChatArea({
   isVoiceActive = false,
   voiceTranscript = '',
   voiceLiveTranscript = '',
+  onConfirmSection,
+  onEditField,
 }: ChatAreaProps) {
   // Show empty state if no messages and voice is not active
   if (messages.length === 0 && !isVoiceActive) {
@@ -82,7 +123,57 @@ export default function ChatArea({
                 <span className="text-xs font-medium text-muted-foreground">AI Assistant</span>
               </div>
             )}
+            
+            {/* Show file attachment card for user messages with files */}
+            {message.role === "user" && message.fileAttachment && (
+              <div className="mb-2">
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 p-2">
+                  <FileText className="h-4 w-4 text-primary" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-foreground truncate">
+                      {message.fileAttachment.name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {(message.fileAttachment.size / 1024).toFixed(1)} KB
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+            
+            {/* Temporarily disabled - showing wrong values
+            {message.role === "assistant" && message.icpExtraction && message.icpExtraction.filledSections && message.icpExtraction.filledSections.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <p className="text-xs font-medium text-muted-foreground mb-2">
+                  Auto-filled ICP sections (please confirm or edit):
+                </p>
+                {message.icpExtraction.filledSections.map((section) => {
+                  const fields = getSectionFields(section, message.icpExtraction!.extractedFields);
+                  if (fields.length === 0) return null;
+                  
+                  return (
+                    <ICPConfirmationCard
+                      key={section}
+                      section={section}
+                      fields={fields}
+                      onConfirm={() => {
+                        if (onConfirmSection) {
+                          onConfirmSection(section);
+                        }
+                      }}
+                      onEdit={(field, value) => {
+                        if (onEditField) {
+                          onEditField(field, value);
+                        }
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+            */}
             {message.timestamp && (
               <p className={`mt-2 text-xs ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                 {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}

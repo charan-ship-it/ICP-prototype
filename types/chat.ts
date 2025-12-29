@@ -28,5 +28,15 @@ export interface MessageDisplay {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  fileAttachment?: {
+    name: string;
+    size: number;
+    type: string;
+  };
+  icpExtraction?: {
+    summary: string;
+    extractedFields: any;
+    filledSections: string[];
+  };
 }
 

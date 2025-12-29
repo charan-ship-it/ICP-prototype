@@ -90,6 +90,18 @@ export async function POST(
       );
     }
 
+    // Validate content length (PostgreSQL TEXT can be very large, but we'll limit to 1MB for practical reasons)
+    const maxContentLength = 1024 * 1024; // 1MB
+    if (typeof content === 'string' && content.length > maxContentLength) {
+      return NextResponse.json(
+        { 
+          error: 'Message content too long',
+          details: `Content exceeds maximum length of ${maxContentLength} characters`,
+        },
+        { status: 400 }
+      );
+    }
+
     // Verify chat exists
     const { data: chat, error: chatError } = await supabase
       .from('chats')

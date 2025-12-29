@@ -6,6 +6,8 @@ import Sidebar from "@/components/Sidebar";
 import ChatArea from "@/components/ChatArea";
 import VoicePanel from "@/components/VoicePanel";
 import ChatInput from "@/components/ChatInput";
+import ICPDocumentViewer from "@/components/ICPDocumentViewer";
+import ICPConfirmationCard from "@/components/ICPConfirmationCard";
 import { getOrCreateSessionId } from "@/lib/session";
 import { ChatListItem, MessageDisplay } from "@/types/chat";
 import { ICPData, calculateProgress } from "@/types/icp";
@@ -24,6 +26,11 @@ export default function Home() {
   const [icpData, setIcpData] = useState<ICPData | null>(null);
   const [progress, setProgress] = useState(0);
   const [streamingAIContent, setStreamingAIContent] = useState<string>('');
+  const [confirmedSections, setConfirmedSections] = useState<Set<string>>(new Set());
+  const [generatedDocument, setGeneratedDocument] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [pendingICPData, setPendingICPData] = useState<ICPData | null>(null);
+  const [showICPCards, setShowICPCards] = useState(false);
   const currentAbortControllerRef = useRef<AbortController | null>(null);
   const handleSendMessageRef = useRef<((content: string) => Promise<void>) | null>(null);
   const conversationChatIdRef = useRef<string | null>(null); // Stable chatId for voice conversation
@@ -184,8 +191,17 @@ export default function Home() {
       const response = await fetch(`/api/chats/${chatId}/icp`);
       if (response.ok) {
         const data = await response.json();
+        console.log('[Load ICP Data] Loaded:', {
+          company_basics_complete: data.company_basics_complete,
+          target_customer_complete: data.target_customer_complete,
+          problem_pain_complete: data.problem_pain_complete,
+          buying_process_complete: data.buying_process_complete,
+          budget_decision_complete: data.budget_decision_complete,
+        });
         setIcpData(data);
-        setProgress(calculateProgress(data));
+        const progress = calculateProgress(data);
+        console.log('[Load ICP Data] Progress:', progress);
+        setProgress(progress);
       } else {
         // No ICP data yet, that's fine
         setIcpData(null);
@@ -217,11 +233,13 @@ export default function Home() {
 
       const messagesData = await messagesResponse.json();
       // Convert timestamp strings to Date objects
-      const messagesWithDates = messagesData.map((msg: any) => ({
+      const messagesWithDates: MessageDisplay[] = messagesData.map((msg: any) => ({
         id: msg.id,
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp ? new Date(msg.timestamp) : undefined,
+        fileAttachment: msg.file_attachment ? JSON.parse(msg.file_attachment) : undefined,
+        icpExtraction: msg.icp_extraction ? JSON.parse(msg.icp_extraction) : undefined,
       }));
       setMessages(messagesWithDates);
 
@@ -268,7 +286,15 @@ export default function Home() {
     }
   };
 
-  const handleSendMessage = useCallback(async (content: string) => {
+  const handleSendMessage = useCallback(async (content: string, file?: File) => {
+    console.log('[handleSendMessage] Called with:', {
+      contentLength: content?.length,
+      hasFile: !!file,
+      sessionId,
+      selectedChatId,
+      voiceActive: voiceHook.isActive,
+    });
+    
     // Generate conversationId if not set (for logging)
     if (!conversationIdRef.current) {
       conversationIdRef.current = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -317,29 +343,148 @@ export default function Home() {
       voiceLogger.log('ChatId', `Using chatId: ${chatId}`, { conversationId: conversationIdRef.current, isNew: false });
     }
 
+    // Process file if attached
+    let finalContent = content;
+    let fileAttachment: { name: string; size: number; type: string } | undefined;
+    let icpExtraction: { summary: string; extractedFields: any; filledSections: string[] } | undefined;
+    
+    if (file) {
+      try {
+        console.log('Processing file:', file.name);
+        
+        if (file.type === 'application/pdf') {
+          // Process PDF: extract text, parse ICP fields, auto-fill ICP data
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('chatId', chatId);
+          
+          const processResponse = await fetch('/api/files/process-pdf', {
+            method: 'POST',
+            body: formData,
+          });
+          
+          if (!processResponse.ok) {
+            const errorData = await processResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || errorData.message || 'Failed to process PDF');
+          }
+          
+          const processData = await processResponse.json();
+          icpExtraction = {
+            summary: processData.summary,
+            extractedFields: processData.extractedFields,
+            filledSections: processData.filledSections,
+          };
+          
+          // Update ICP data in state
+          if (processData.icpData) {
+            console.log('[PDF Processing] Updated ICP data:', processData.icpData);
+            
+            // Store as pending data for user to confirm via cards
+            setPendingICPData(processData.icpData);
+            setShowICPCards(true);
+            
+            // Also update current ICP data for progress calculation
+            setIcpData(processData.icpData);
+            const newProgress = calculateProgress(processData.icpData);
+            console.log('[PDF Processing] New progress:', newProgress);
+            setProgress(newProgress);
+          }
+          
+          // Store extracted text for AI context (don't show to user)
+          if (processData.extractedText) {
+            finalContent = content 
+              ? `${content}\n\n[Document content from ${file.name}]:\n${processData.extractedText}`
+              : `[Document content from ${file.name}]:\n${processData.extractedText}`;
+          }
+        } else {
+          // For text files, just read content (no ICP extraction)
+          const reader = new FileReader();
+          const fileContent = await new Promise<string>((resolve, reject) => {
+            reader.onload = (e) => {
+              try {
+                const text = e.target?.result as string;
+                const maxLength = 50000;
+                const truncated = text.length > maxLength 
+                  ? text.substring(0, maxLength) + '\n\n... (file truncated - too large)'
+                  : text;
+                resolve(truncated);
+              } catch (error) {
+                reject(error);
+              }
+            };
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsText(file);
+          });
+          
+          // For text files, include content in message
+          finalContent = content 
+            ? `${content}\n\n[File: ${file.name}]\n\n${fileContent}`
+            : `[File: ${file.name}]\n\n${fileContent}`;
+        }
+        
+        // Store file attachment info
+        fileAttachment = {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+        };
+      } catch (error) {
+        console.error('Error processing file:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Failed to process file';
+        finalContent = content 
+          ? `${content}\n\n[Error processing file: ${errorMessage}]`
+          : `[Error processing file: ${errorMessage}]`;
+      }
+    }
+
     // Save user message
+    // For PDFs, finalContent now includes the extracted text for AI context
+    // For text files, finalContent includes the file content
+    const messageContent = finalContent || content || '[File attachment]';
+    
     try {
       const userResponse = await fetch(`/api/chats/${chatId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'user', content }),
+        body: JSON.stringify({ 
+          role: 'user', 
+          content: messageContent,
+        }),
       });
 
       if (!userResponse.ok) {
-        const errorData = await userResponse.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('Failed to save message:', errorData);
-        const errorMessage = errorData.error || errorData.details || 'Failed to save message';
+        let errorData: any = {};
+        try {
+          const text = await userResponse.text();
+          if (text) {
+            errorData = JSON.parse(text);
+          }
+        } catch (e) {
+          // Response might not be JSON
+          console.warn('Error response is not JSON:', e);
+        }
+        
+        console.error('Failed to save message:', {
+          status: userResponse.status,
+          statusText: userResponse.statusText,
+          errorData,
+          chatId,
+        });
+        
+        const errorMessage = errorData?.error || errorData?.details || errorData?.message || `Failed to save message (${userResponse.status})`;
         throw new Error(errorMessage);
       }
       
       const userMessage = await userResponse.json();
       
       // Convert timestamp to Date object
-      const userMessageWithDate = {
+      const userMessageWithDate: MessageDisplay = {
         id: userMessage.id,
         role: userMessage.role,
-        content: userMessage.content,
+        content: fileAttachment ? `[File: ${fileAttachment.name}]` : userMessage.content,
         timestamp: userMessage.timestamp ? new Date(userMessage.timestamp) : new Date(),
+        fileAttachment,
+        icpExtraction,
       };
       
       setMessages((prev) => [...prev, userMessageWithDate]);
@@ -433,6 +578,15 @@ export default function Home() {
       chatId 
     });
     
+    // If we have ICP extraction from PDF, modify the system prompt or add context
+    // The AI will use the summary we generated
+    let aiPromptContext = '';
+    if (icpExtraction && icpExtraction.summary) {
+      // The backend already processed the PDF and filled ICP data
+      // We'll let the AI know about this in the conversation
+      aiPromptContext = icpExtraction.summary;
+    }
+    
     // Call AI API with streaming
     try {
       const aiResponse = await fetch('/api/ai/chat', {
@@ -457,13 +611,21 @@ export default function Home() {
       const firstTokenTime = Date.now();
 
       // Create initial streaming message
+      // If we have ICP extraction, start with the summary
+      const initialContent = icpExtraction?.summary || '';
       const streamingMessage: MessageDisplay = {
         id: messageId,
         role: 'assistant',
-        content: '',
+        content: initialContent,
         timestamp: new Date(),
+        icpExtraction: icpExtraction,
       };
       setMessages((prev) => [...prev, streamingMessage]);
+      
+      // If we have a summary, also update streaming content
+      if (initialContent) {
+        setStreamingAIContent(initialContent);
+      }
 
       // Read stream
       if (reader) {
@@ -487,16 +649,26 @@ export default function Home() {
                 
                 if (data.done && data.message) {
                   // Final message from server
-                  const finalMessage = {
+                  // If we have ICP extraction, combine summary with AI response
+                  const aiResponseContent = data.message.content;
+                  const finalContent = icpExtraction?.summary 
+                    ? `${icpExtraction.summary}\n\n${aiResponseContent}`
+                    : aiResponseContent;
+                  
+                  const finalMessage: MessageDisplay = {
                     id: data.message.id,
                     role: data.message.role,
-                    content: data.message.content,
+                    content: finalContent,
                     timestamp: new Date(data.message.created_at),
+                    icpExtraction: icpExtraction,
                   };
                   setMessages((prev) => 
                     prev.map(msg => msg.id === messageId ? finalMessage : msg)
                   );
                   setStreamingAIContent(''); // Clear streaming content when done
+                  
+                  // If we have ICP extraction from PDF, show confirmation cards
+                  // This will be handled in ChatArea component
                   
                   // Log timing metrics (openaiStartTime is defined before fetch)
                   const totalDuration = Date.now() - openaiStartTime;
@@ -532,8 +704,17 @@ export default function Home() {
                       
                       if (icpResponse.ok) {
                         const savedICP = await icpResponse.json();
+                        console.log('[ICP Update] Saved ICP data:', {
+                          company_basics_complete: savedICP.company_basics_complete,
+                          target_customer_complete: savedICP.target_customer_complete,
+                          problem_pain_complete: savedICP.problem_pain_complete,
+                          buying_process_complete: savedICP.buying_process_complete,
+                          budget_decision_complete: savedICP.budget_decision_complete,
+                        });
                         setIcpData(savedICP);
-                        setProgress(calculateProgress(savedICP));
+                        const newProgress = calculateProgress(savedICP);
+                        console.log('[ICP Update] New progress:', newProgress);
+                        setProgress(newProgress);
                       }
                     }
                   } catch (error) {
@@ -545,7 +726,7 @@ export default function Home() {
                     await loadICPData(chatId);
                   }
                   if (sessionId) loadChats(sessionId);
-                } else if (data.content) {
+                  } else if (data.content) {
                   // Streaming content chunk
                   if (!firstTokenReceived) {
                     firstTokenReceived = true;
@@ -569,14 +750,19 @@ export default function Home() {
                   
                   fullContent += data.content;
                   
+                  // Combine summary with streaming content if we have ICP extraction
+                  const displayContent = icpExtraction?.summary 
+                    ? `${icpExtraction.summary}\n\n${fullContent}`
+                    : fullContent;
+                  
                   // CRITICAL: In voice mode, don't update message display immediately
                   // Let onTextSpoken callback handle it (synchronized with audio)
                   if (!voiceHook.isActive) {
-                    setStreamingAIContent(fullContent); // Update streaming content for UI
+                    setStreamingAIContent(displayContent); // Update streaming content for UI
                     setMessages((prev) =>
                       prev.map(msg =>
                         msg.id === messageId
-                          ? { ...msg, content: fullContent }
+                          ? { ...msg, content: displayContent, icpExtraction: icpExtraction }
                           : msg
                       )
                     );
@@ -678,8 +864,115 @@ export default function Home() {
     voiceHook.endConversation();
   }, [voiceHook]);
 
+  // Handle ICP section confirmation
+  const handleConfirmSection = useCallback(async (section: string) => {
+    if (!selectedChatId || !pendingICPData) return;
+    
+    try {
+      // Update the database with the confirmed section data
+      const response = await fetch(`/api/chats/${selectedChatId}/icp`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pendingICPData),
+      });
+      
+      if (response.ok) {
+        const updatedData = await response.json();
+        setIcpData(updatedData);
+        setProgress(calculateProgress(updatedData));
+        
+        // Mark section as confirmed
+        setConfirmedSections((prev) => new Set(prev).add(section));
+        
+        console.log(`[ICP Confirmation] Section "${section}" confirmed and saved`);
+      }
+    } catch (error) {
+      console.error('Error confirming ICP section:', error);
+    }
+  }, [selectedChatId, pendingICPData]);
+
+  // Handle ICP field edit
+  const handleEditField = useCallback((field: keyof ICPData, value: string) => {
+    if (!pendingICPData) return;
+    
+    setPendingICPData((prev) => {
+      if (!prev) return null;
+      return { ...prev, [field]: value };
+    });
+  }, [pendingICPData]);
+
+  // Handle confirming all sections at once
+  const handleConfirmAllSections = useCallback(async () => {
+    if (!selectedChatId || !pendingICPData) return;
+    
+    try {
+      const response = await fetch(`/api/chats/${selectedChatId}/icp`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pendingICPData),
+      });
+      
+      if (response.ok) {
+        const updatedData = await response.json();
+        setIcpData(updatedData);
+        setProgress(calculateProgress(updatedData));
+        
+        // Hide cards after confirmation
+        setShowICPCards(false);
+        setPendingICPData(null);
+        
+        console.log('[ICP Confirmation] All sections confirmed and saved');
+        
+        // Reload ICP data to ensure state is fresh
+        await loadICPData(selectedChatId);
+      }
+    } catch (error) {
+      console.error('Error confirming all ICP sections:', error);
+    }
+  }, [selectedChatId, pendingICPData, loadICPData]);
+
+  // Generate ICP document
+  const handleGenerateDocument = useCallback(async () => {
+    if (!selectedChatId || isGenerating) return;
+    
+    setIsGenerating(true);
+    try {
+      const response = await fetch(`/api/chats/${selectedChatId}/generate-document`, {
+        method: 'POST',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to generate document');
+      }
+      
+      const data = await response.json();
+      setGeneratedDocument(data.document);
+    } catch (error) {
+      console.error('Error generating document:', error);
+      alert('Failed to generate document. Please try again.');
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [selectedChatId, isGenerating]);
+
+  // Check if ICP is complete
+  const isICPComplete = icpData?.company_basics_complete && 
+                        icpData?.target_customer_complete && 
+                        icpData?.problem_pain_complete && 
+                        icpData?.buying_process_complete && 
+                        icpData?.budget_decision_complete;
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
+      {/* Document Viewer Modal */}
+      {generatedDocument && (
+        <ICPDocumentViewer
+          document={generatedDocument}
+          chatId={selectedChatId || ''}
+          onClose={() => setGeneratedDocument(null)}
+        />
+      )}
+      
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar */}
@@ -710,7 +1003,131 @@ export default function Home() {
             voiceTranscript={voiceHook.transcript}
             voiceLiveTranscript={voiceHook.liveTranscript}
           />
-          <ChatInput onSend={handleSendMessage} disabled={isLoading || voiceHook.isActive} voiceActive={voiceHook.isActive} />
+          {/* ICP Confirmation Cards */}
+          {showICPCards && pendingICPData && (
+            <div className="px-4 py-3 border-t border-border bg-muted/20 max-h-[400px] overflow-y-auto">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-foreground">Review Extracted ICP Data</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleConfirmAllSections}
+                    className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors font-medium"
+                  >
+                    Confirm All
+                  </button>
+                  <button
+                    onClick={() => setShowICPCards(false)}
+                    className="px-3 py-1.5 text-xs bg-muted text-foreground rounded hover:bg-muted/80 transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {/* Company Basics */}
+                {(pendingICPData.company_name || pendingICPData.industry || pendingICPData.company_size || pendingICPData.location) && (
+                  <ICPConfirmationCard
+                    section="Company Basics"
+                    fields={[
+                      { key: 'company_name', label: 'Company Name', value: pendingICPData.company_name },
+                      { key: 'industry', label: 'Industry', value: pendingICPData.industry },
+                      { key: 'company_size', label: 'Company Size', value: pendingICPData.company_size },
+                      { key: 'location', label: 'Location', value: pendingICPData.location },
+                    ]}
+                    onConfirm={() => handleConfirmSection('company_basics')}
+                    onEdit={handleEditField}
+                  />
+                )}
+                
+                {/* Target Customer */}
+                {(pendingICPData.target_customer_type || pendingICPData.target_demographics || pendingICPData.target_psychographics) && (
+                  <ICPConfirmationCard
+                    section="Target Customer"
+                    fields={[
+                      { key: 'target_customer_type', label: 'Customer Type', value: pendingICPData.target_customer_type },
+                      { key: 'target_demographics', label: 'Demographics', value: pendingICPData.target_demographics },
+                      { key: 'target_psychographics', label: 'Psychographics', value: pendingICPData.target_psychographics },
+                    ]}
+                    onConfirm={() => handleConfirmSection('target_customer')}
+                    onEdit={handleEditField}
+                  />
+                )}
+                
+                {/* Problem & Pain */}
+                {(pendingICPData.pain_points || pendingICPData.main_problems || pendingICPData.current_solutions) && (
+                  <ICPConfirmationCard
+                    section="Problem & Pain"
+                    fields={[
+                      { key: 'pain_points', label: 'Pain Points', value: pendingICPData.pain_points },
+                      { key: 'main_problems', label: 'Main Problems', value: pendingICPData.main_problems },
+                      { key: 'current_solutions', label: 'Current Solutions', value: pendingICPData.current_solutions },
+                    ]}
+                    onConfirm={() => handleConfirmSection('problem_pain')}
+                    onEdit={handleEditField}
+                  />
+                )}
+                
+                {/* Buying Process */}
+                {(pendingICPData.decision_makers || pendingICPData.buying_process_steps || pendingICPData.evaluation_criteria) && (
+                  <ICPConfirmationCard
+                    section="Buying Process"
+                    fields={[
+                      { key: 'decision_makers', label: 'Decision Makers', value: pendingICPData.decision_makers },
+                      { key: 'buying_process_steps', label: 'Process Steps', value: pendingICPData.buying_process_steps },
+                      { key: 'evaluation_criteria', label: 'Evaluation Criteria', value: pendingICPData.evaluation_criteria },
+                    ]}
+                    onConfirm={() => handleConfirmSection('buying_process')}
+                    onEdit={handleEditField}
+                  />
+                )}
+                
+                {/* Budget & Decision Maker */}
+                {(pendingICPData.budget_range || pendingICPData.decision_maker_role || pendingICPData.approval_process) && (
+                  <ICPConfirmationCard
+                    section="Budget & Decision Maker"
+                    fields={[
+                      { key: 'budget_range', label: 'Budget Range', value: pendingICPData.budget_range },
+                      { key: 'decision_maker_role', label: 'Decision Maker Role', value: pendingICPData.decision_maker_role },
+                      { key: 'approval_process', label: 'Approval Process', value: pendingICPData.approval_process },
+                    ]}
+                    onConfirm={() => handleConfirmSection('budget_decision')}
+                    onEdit={handleEditField}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+          
+          {/* Generate Document Button */}
+          {isICPComplete && !isLoading && (
+            <div className="px-4 py-2 border-t border-border bg-muted/30">
+              <button
+                onClick={handleGenerateDocument}
+                disabled={isGenerating}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 font-medium"
+              >
+                {isGenerating ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                    Generating ICP Document...
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Generate ICP Document
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+          
+          <ChatInput 
+            onSend={handleSendMessage} 
+            disabled={isLoading} 
+            voiceActive={voiceHook.isActive}
+          />
         </div>
 
         {/* Right Voice Panel - Hidden on small screens */}

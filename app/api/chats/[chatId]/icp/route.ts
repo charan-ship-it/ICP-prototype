@@ -45,8 +45,8 @@ export async function GET(
   }
 }
 
-// PATCH: Update ICP data for a chat
-export async function PATCH(
+// Shared update logic for PATCH and PUT
+async function updateICPData(
   request: NextRequest,
   { params }: { params: Promise<{ chatId: string }> }
 ) {
@@ -123,6 +123,18 @@ export async function PATCH(
       result = data;
     }
 
+    console.log('[ICP Update] Successfully updated ICP data:', {
+      chatId,
+      fieldsUpdated: Object.keys(updates),
+      completionStatus: {
+        company_basics: result.company_basics_complete,
+        target_customer: result.target_customer_complete,
+        problem_pain: result.problem_pain_complete,
+        buying_process: result.buying_process_complete,
+        budget_decision: result.budget_decision_complete,
+      }
+    });
+
     return NextResponse.json(result);
   } catch (error) {
     console.error('Unexpected error in ICP API:', error);
@@ -131,5 +143,21 @@ export async function PATCH(
       { status: 500 }
     );
   }
+}
+
+// PATCH: Update ICP data for a chat
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ chatId: string }> }
+) {
+  return updateICPData(request, { params });
+}
+
+// PUT: Update ICP data for a chat (same as PATCH)
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ chatId: string }> }
+) {
+  return updateICPData(request, { params });
 }
 

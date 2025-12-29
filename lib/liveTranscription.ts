@@ -63,8 +63,34 @@ export class LiveTranscription {
 
       // Handle errors
       this.recognition.onerror = (event: any) => {
-        console.error('[LiveTranscription] Error:', event.error);
-        this.options.onError?.(new Error(`Speech recognition error: ${event.error}`));
+        // Handle common non-critical errors gracefully
+        const errorType = event.error;
+        
+        // "no-speech" is a common, non-critical error when user doesn't speak
+        // It's expected behavior, not a real error
+        if (errorType === 'no-speech') {
+          // Silently ignore - this is expected when user pauses
+          return;
+        }
+        
+        // "aborted" is also expected when we intentionally stop
+        if (errorType === 'aborted') {
+          return;
+        }
+        
+        // Log other errors but don't treat as critical
+        if (errorType === 'audio-capture' || errorType === 'network') {
+          console.warn('[LiveTranscription] Error (non-critical):', errorType);
+          // These are recoverable - don't call onError
+          return;
+        }
+        
+        // Only log actual errors
+        console.error('[LiveTranscription] Error:', errorType);
+        // Only call onError for unexpected errors
+        if (errorType !== 'not-allowed' && errorType !== 'service-not-allowed') {
+          this.options.onError?.(new Error(`Speech recognition error: ${errorType}`));
+        }
       };
 
       // Handle end
