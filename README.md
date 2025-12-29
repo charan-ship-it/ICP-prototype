@@ -51,7 +51,10 @@ OPENAI_API_KEY=sk-your-openai-key
 OPENAI_MODEL=gpt-4o-mini
 
 # ElevenLabs
-ELEVENLABS_API_KEY=your-elevenlabs-key
+# Get your API key from https://elevenlabs.io/app/settings/api-keys
+# The API key is used server-side for secure WebSocket connections
+ELEVENLABS_API_KEY=your-elevenlabs-api-key-here
+# Voice ID can be found in ElevenLabs voice library (optional, has default)
 NEXT_PUBLIC_ELEVENLABS_VOICE_ID=GzE4TcXfh9rYCU9gVgPp
 ```
 

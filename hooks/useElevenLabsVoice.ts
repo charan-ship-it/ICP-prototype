@@ -102,17 +102,17 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           ttsFirstChunkTimeRef.current = null;
         }
         
-        // CRITICAL FIX: On FIRST audio chunk, display ALL text sent to TTS so far
-        // This ensures text appears when audio starts, not before
-        // ElevenLabs sends many audio chunks per text chunk, so we only update on first
-        if (!hasStartedSpeakingRef.current && fullTextSentToTTSRef.current.length > 0) {
-          hasStartedSpeakingRef.current = true;
-          console.log('[onAudioChunk] First audio chunk - displaying text:', fullTextSentToTTSRef.current.substring(0, 100));
-          onTextSpoken?.(fullTextSentToTTSRef.current);
-          voiceLogger.log('TTS', `Started speaking, displaying text: "${fullTextSentToTTSRef.current.substring(0, 50)}${fullTextSentToTTSRef.current.length > 50 ? '...' : ''}"`, context);
-        } else if (hasStartedSpeakingRef.current && fullTextSentToTTSRef.current.length > 0) {
-          // Continue updating as more text is sent to TTS (streaming)
-          console.log('[onAudioChunk] Updating text:', fullTextSentToTTSRef.current.length, 'chars');
+        // CRITICAL FIX: Always update text display when we have text and audio is playing
+        // This ensures text appears in chat as the agent speaks
+        if (fullTextSentToTTSRef.current.length > 0) {
+          if (!hasStartedSpeakingRef.current) {
+            // First audio chunk - mark as started
+            hasStartedSpeakingRef.current = true;
+            console.log('[onAudioChunk] First audio chunk - displaying text:', fullTextSentToTTSRef.current.substring(0, 100));
+            voiceLogger.log('TTS', `Started speaking, displaying text: "${fullTextSentToTTSRef.current.substring(0, 50)}${fullTextSentToTTSRef.current.length > 50 ? '...' : ''}"`, context);
+          }
+          // Always call onTextSpoken to update chat display (even if already started)
+          // This ensures text appears and updates as more content streams in
           onTextSpoken?.(fullTextSentToTTSRef.current);
         }
         
@@ -213,12 +213,11 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           fullTextSentToTTSRef.current += text;
           console.log('[textBuffer.onFlush] Total text accumulated:', fullTextSentToTTSRef.current.length, 'chars');
           
-          // If audio has already started, update display immediately as more text arrives
-          if (hasStartedSpeakingRef.current) {
-            console.log('[textBuffer.onFlush] Audio already started, updating display');
+          // CRITICAL FIX: Always try to update display when text is flushed
+          // This ensures text appears even if audio hasn't started yet
+          // The onAudioChunk handler will also update, but this provides immediate feedback
+          if (fullTextSentToTTSRef.current.length > 0) {
             onTextSpoken?.(fullTextSentToTTSRef.current);
-          } else {
-            console.log('[textBuffer.onFlush] Waiting for first audio chunk before displaying');
           }
           
           wsManagerRef.current.sendText(text, false);
@@ -710,7 +709,9 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     const context = voiceLogger.getContext();
     voiceLogger.log('Conversation', 'Ending', context);
     
+    // CRITICAL FIX: Set isActive to false immediately to stop voice mode
     isActiveRef.current = false;
+    setIsActive(false); // Update state so UI reflects voice mode is off
     isBargingInRef.current = false;
 
     // Stop live transcription

@@ -63,17 +63,25 @@ export default function Home() {
         setStreamingAIContent(spokenText);
         setMessages((prev) => {
           // Find the most recent assistant message (streaming message)
-          const lastAssistantIndex = prev.length - 1;
-          const lastMsg = prev[lastAssistantIndex];
+          // Search from the end to find the last assistant message
+          let lastAssistantIndex = -1;
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'assistant') {
+              lastAssistantIndex = i;
+              break;
+            }
+          }
           
-          if (lastMsg && lastMsg.role === 'assistant') {
+          if (lastAssistantIndex >= 0) {
+            // Update existing assistant message
             const updated = [...prev];
-            updated[lastAssistantIndex] = { ...lastMsg, content: spokenText };
+            updated[lastAssistantIndex] = { ...updated[lastAssistantIndex], content: spokenText };
             return updated;
           }
           
-          // If no assistant message exists, create one (shouldn't happen, but safety)
-          console.warn('[onTextSpoken] No assistant message found, creating one');
+          // If no assistant message exists, create one
+          // This can happen if TTS starts before OpenAI stream creates the message
+          console.log('[onTextSpoken] No assistant message found, creating one with text length:', spokenText.length);
           return [...prev, {
             id: `spoken-${Date.now()}`,
             role: 'assistant' as const,
