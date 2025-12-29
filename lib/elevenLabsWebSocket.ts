@@ -29,6 +29,8 @@ export class ElevenLabsWebSocketManager {
   private maxReconnectAttempts: number = 5;
   private keepAliveInterval: NodeJS.Timeout | null = null;
   private options: TTSOptions;
+  private lastTextSentTime: number = 0;
+  private hasStartedSpeaking: boolean = false;
 
   // Callbacks
   private onAudioChunkCallback?: (chunk: AudioChunk) => void;
@@ -70,12 +72,13 @@ export class ElevenLabsWebSocketManager {
           console.log('[ElevenLabs WS] Connected');
           this.isConnected = true;
           this.reconnectAttempts = 0;
+          this.hasStartedSpeaking = false;
           
           // Send initial configuration
           await this.sendConfiguration();
           
-          // Start keep-alive
-          this.startKeepAlive();
+          // Don't start keep-alive immediately - wait until we actually send text
+          // This prevents input_timeout_exceeded errors when connection is idle
           
           this.onConnectCallback?.();
           resolve();
@@ -94,6 +97,7 @@ export class ElevenLabsWebSocketManager {
           console.log('[ElevenLabs WS] Disconnected', event.code, event.reason);
           this.isConnected = false;
           this.stopKeepAlive();
+          this.hasStartedSpeaking = false;
           this.onDisconnectCallback?.();
           
           // Attempt reconnect if not intentional
@@ -142,7 +146,7 @@ export class ElevenLabsWebSocketManager {
     }
 
     const config: any = {
-      text: ' ',
+      text: ' ', // Initial text to establish connection
       voice_settings: this.options.voiceSettings,
       generation_config: {
         chunk_length_schedule: [120, 160, 250, 290],
@@ -155,6 +159,7 @@ export class ElevenLabsWebSocketManager {
     }
 
     this.ws.send(JSON.stringify(config));
+    this.lastTextSentTime = Date.now();
   }
 
   /**
@@ -164,6 +169,13 @@ export class ElevenLabsWebSocketManager {
     const contextId = `context_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     this.contexts.add(contextId);
     this.currentContextId = contextId;
+    
+    // Start keep-alive when we create a context (about to send text)
+    if (!this.hasStartedSpeaking) {
+      this.hasStartedSpeaking = true;
+      this.startKeepAlive();
+    }
+    
     return contextId;
   }
 
@@ -203,10 +215,10 @@ export class ElevenLabsWebSocketManager {
     }
 
     // Use provided context or current context
-    const activeContextId = contextId || this.currentContextId;
+    let activeContextId = contextId || this.currentContextId;
     if (!activeContextId) {
-      console.warn('[ElevenLabs WS] No active context, creating one');
-      this.createContext();
+      console.log('[ElevenLabs WS] No active context, creating one');
+      activeContextId = this.createContext();
     }
 
     const message: any = {
@@ -218,6 +230,7 @@ export class ElevenLabsWebSocketManager {
     }
 
     this.ws.send(JSON.stringify(message));
+    this.lastTextSentTime = Date.now();
   }
 
   /**
@@ -244,7 +257,20 @@ export class ElevenLabsWebSocketManager {
             isFinal: data.is_final || false,
           });
         } else if (data.error) {
-          this.onErrorCallback?.(new Error(data.error));
+          // Handle specific errors gracefully
+          if (data.error === 'input_timeout_exceeded') {
+            // This is expected when connection is idle - just log as info
+            console.log('[ElevenLabs WS] Input timeout (expected for idle connection) - reconnecting...');
+            // Reconnect silently
+            this.disconnect();
+            this.connect().catch(err => {
+              console.error('[ElevenLabs WS] Failed to reconnect after timeout:', err);
+            });
+          } else {
+            // Other errors are real issues
+            console.error('[ElevenLabs WS] Error from server:', data.error);
+            this.onErrorCallback?.(new Error(data.error));
+          }
         }
       }
     } catch (error) {
@@ -253,15 +279,23 @@ export class ElevenLabsWebSocketManager {
   }
 
   /**
-   * Start keep-alive mechanism (send space every 20 seconds)
+   * Start keep-alive mechanism
+   * Only starts after first text is sent to avoid input_timeout_exceeded on idle connections
    */
   private startKeepAlive(): void {
     this.stopKeepAlive();
+    
+    // Send keep-alive every 8 seconds (well before the 15s timeout)
     this.keepAliveInterval = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ text: ' ' }));
+        const timeSinceLastText = Date.now() - this.lastTextSentTime;
+        // Only send keep-alive if we haven't sent text recently
+        if (timeSinceLastText > 7000) {
+          this.ws.send(JSON.stringify({ text: ' ' }));
+          this.lastTextSentTime = Date.now();
+        }
       }
-    }, 20000); // 20 seconds
+    }, 8000); // 8 seconds
   }
 
   /**
@@ -286,6 +320,7 @@ export class ElevenLabsWebSocketManager {
     this.isConnected = false;
     this.contexts.clear();
     this.currentContextId = null;
+    this.hasStartedSpeaking = false;
   }
 
   /**
@@ -330,4 +365,3 @@ export class ElevenLabsWebSocketManager {
     return this.currentContextId;
   }
 }
-

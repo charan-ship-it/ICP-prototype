@@ -69,7 +69,7 @@ export default function VoicePanel({
           const sourceNode = audioContext.createMediaStreamSource(stream);
           sourceNodeRef.current = sourceNode;
 
-          // Create VAD
+          // Create VAD with reduced timeouts for faster response
           const cleanup = createVAD(audioContext, sourceNode, {
             onSpeechStart: () => {
               detectSpeechStart();
@@ -82,13 +82,14 @@ export default function VoicePanel({
             },
             energyThreshold: 0.03,
             speechStartMs: 150,
-            pauseDuringSpeechMs: 1500, // 1.5s pause during speech = auto-send
-            speechEndMs: 2500, // 2.5s complete silence = end
+            pauseDuringSpeechMs: 800, // 0.8s pause = auto-send (reduced from 1.5s)
+            speechEndMs: 1200, // 1.2s complete silence = end (reduced from 2.5s)
+            debugLogging: false, // Set to true for debugging
           });
 
           vadCleanupRef.current = cleanup;
           vadInitializedRef.current = true;
-          console.log('[VoicePanel] VAD initialized - continuous listening active');
+          console.log('[VoicePanel] VAD initialized once with faster response times');
         } catch (error) {
           console.error('[VoicePanel] Failed to initialize VAD:', error);
         }
@@ -108,6 +109,14 @@ export default function VoicePanel({
           // Ignore
         }
         sourceNodeRef.current = null;
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        try {
+          audioContextRef.current.close();
+        } catch (e) {
+          // Ignore
+        }
+        audioContextRef.current = null;
       }
       vadInitializedRef.current = false;
     }

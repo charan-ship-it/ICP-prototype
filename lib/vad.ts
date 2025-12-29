@@ -11,6 +11,7 @@ export interface VADOptions {
   speechStartMs?: number;
   speechEndMs?: number;
   pauseDuringSpeechMs?: number;
+  debugLogging?: boolean; // Add debug logging option
 }
 
 export function createVAD(
@@ -24,8 +25,9 @@ export function createVAD(
     onPauseDuringSpeech,
     energyThreshold = 0.03, // Higher threshold for background noise filtering
     speechStartMs = 150,
-    speechEndMs = 2500, // 2.5 seconds complete silence for speech end
-    pauseDuringSpeechMs = 1500, // 1.5 seconds pause to trigger send during speech
+    speechEndMs = 1200, // 1.2 seconds silence = complete speech end (reduced from 2.5s)
+    pauseDuringSpeechMs = 800, // 0.8 seconds pause = auto-send during speech (reduced from 1.5s)
+    debugLogging = false,
   } = options;
 
   if (audioContext.state === 'closed') {
@@ -104,6 +106,9 @@ export function createVAD(
           // Confirmed speech start
           isSpeaking = true;
           speechStartTime = null;
+          if (debugLogging) {
+            console.log('[VAD] Speech confirmed - user is speaking');
+          }
           onSpeechStart();
         }
       }
@@ -116,23 +121,32 @@ export function createVAD(
         if (speechEndTime === null) {
           speechEndTime = now;
           pauseStartTime = now;
+          if (debugLogging) {
+            console.log('[VAD] Silence detected - starting pause timer');
+          }
         } else {
           const pauseDuration = now - pauseStartTime!;
           
           // Check for pause during speech (auto-send)
           if (onPauseDuringSpeech && !hasTriggeredPause && pauseDuration >= pauseDuringSpeechMs) {
             hasTriggeredPause = true;
+            if (debugLogging) {
+              console.log(`[VAD] Pause threshold reached (${pauseDuration}ms) - auto-sending`);
+            }
             onPauseDuringSpeech();
-            // Don't reset isSpeaking - user might continue
+            // Don't reset isSpeaking yet - user might continue
           }
           
-          // Check for complete speech end
+          // Check for complete speech end (longer pause)
           if (now - speechEndTime >= speechEndMs) {
             // Confirmed speech end
             isSpeaking = false;
             speechEndTime = null;
             pauseStartTime = null;
             hasTriggeredPause = false;
+            if (debugLogging) {
+              console.log('[VAD] Complete silence - speech ended');
+            }
             onSpeechEnd();
           }
         }

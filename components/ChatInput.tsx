@@ -6,9 +6,10 @@ import { useState, useRef, useEffect } from "react";
 interface ChatInputProps {
   onSend?: (message: string) => void;
   disabled?: boolean;
+  voiceActive?: boolean;
 }
 
-export default function ChatInput({ onSend, disabled = false }: ChatInputProps) {
+export default function ChatInput({ onSend, disabled = false, voiceActive = false }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const maxRows = 6;
@@ -61,7 +62,7 @@ export default function ChatInput({ onSend, disabled = false }: ChatInputProps) 
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
+            placeholder={voiceActive ? "Voice mode active - use the voice panel to speak..." : "Type your message... (Press Enter to send, Shift+Enter for new line)"}
             disabled={disabled}
             className="w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed"
             rows={1}
@@ -78,8 +79,14 @@ export default function ChatInput({ onSend, disabled = false }: ChatInputProps) 
         </button>
       </div>
       <p className="mx-auto mt-2 max-w-4xl text-xs text-muted-foreground text-center">
-        Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted rounded border border-border">Enter</kbd> to send,{" "}
-        <kbd className="px-1.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted rounded border border-border">Shift + Enter</kbd> for new line
+        {voiceActive ? (
+          <span className="text-primary font-medium">🎤 Voice mode is active - use the voice panel on the right to speak</span>
+        ) : (
+          <>
+            Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted rounded border border-border">Enter</kbd> to send,{" "}
+            <kbd className="px-1.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted rounded border border-border">Shift + Enter</kbd> for new line
+          </>
+        )}
       </p>
     </div>
   );

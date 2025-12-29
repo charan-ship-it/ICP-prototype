@@ -138,6 +138,10 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           audioPlayerRef.current.onEnded(() => {
             if (isActiveRef.current && stateRef.current === 'speaking') {
               log('Audio playback ended, returning to listening');
+              
+              // Reset TTS timer for next speech segment
+              ttsFirstChunkTimeRef.current = null;
+              
               setState('listening');
               stateRef.current = 'listening';
             }
@@ -454,10 +458,14 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       return;
     }
 
+    // Create context on first text chunk (lazy initialization to avoid timeout errors)
     if (ttsFirstChunkTimeRef.current === null && stateRef.current !== 'speaking') {
       ttsFirstChunkTimeRef.current = Date.now();
       const context = voiceLogger.getContext();
-      voiceLogger.log('TTS', 'Starting', context);
+      voiceLogger.log('TTS', 'Starting - creating context', context);
+      
+      // Create a new context for this speech segment
+      wsManagerRef.current.createContext();
     }
 
     if (stateRef.current !== 'speaking' && stateRef.current !== 'thinking') {
@@ -701,9 +709,13 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
    */
   const detectSpeechStart = useCallback(async () => {
     if (stateRef.current === 'listening' && isActiveRef.current) {
+      const context = voiceLogger.getContext();
+      voiceLogger.log('VAD', 'Speech start detected (user started speaking)', context);
       log('Speech start detected (VAD)');
       // Live transcription is already running, just log the event
     } else if (stateRef.current === 'speaking' && isActiveRef.current) {
+      const context = voiceLogger.getContext();
+      voiceLogger.log('VAD', 'Speech detected during AI speaking - BARGE-IN', context);
       log('Speech detected during speaking - BARGE-IN');
       handleBargeIn();
     }
@@ -713,9 +725,12 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
    * Handle pause during speech - send accumulated transcript
    */
   const handlePauseDuringSpeech = useCallback(async () => {
-    if (accumulatedTranscriptRef.current.trim().length > 0 && isActiveRef.current) {
-      const finalTranscript = accumulatedTranscriptRef.current.trim();
-      log(`Pause during speech detected - sending accumulated transcript: "${finalTranscript}"`);
+    const finalTranscript = accumulatedTranscriptRef.current.trim();
+    
+    if (finalTranscript.length > 0 && isActiveRef.current) {
+      const context = voiceLogger.getContext();
+      voiceLogger.log('VAD', `Pause during speech - sending transcript: "${finalTranscript.substring(0, 50)}${finalTranscript.length > 50 ? '...' : ''}"`, context);
+      log(`Auto-send triggered by pause: "${finalTranscript}"`);
       
       // Reset for next utterance
       accumulatedTranscriptRef.current = '';
@@ -723,11 +738,15 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       setLiveTranscript('');
 
       // Update state to thinking
+      const previousState = stateRef.current;
       setState('thinking');
       stateRef.current = 'thinking';
+      voiceLogger.stateTransition(previousState, 'thinking', 'transcript received (pause)', context);
 
       // Send transcript to parent
       onTranscriptComplete?.(finalTranscript);
+    } else {
+      log('Pause during speech detected but no transcript to send');
     }
   }, [onTranscriptComplete, log]);
 

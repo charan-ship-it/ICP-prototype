@@ -641,8 +641,15 @@ export default function Home() {
             toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
             progress={progress}
           />
-          <ChatArea messages={messages} isLoading={isLoading} />
-          <ChatInput onSend={handleSendMessage} disabled={isLoading} />
+          <ChatArea 
+            messages={messages} 
+            isLoading={isLoading}
+            voiceState={voiceHook.state}
+            isVoiceActive={voiceHook.isActive}
+            voiceTranscript={voiceHook.transcript}
+            voiceLiveTranscript={voiceHook.liveTranscript}
+          />
+          <ChatInput onSend={handleSendMessage} disabled={isLoading || voiceHook.isActive} voiceActive={voiceHook.isActive} />
         </div>
 
         {/* Right Voice Panel - Hidden on small screens */}
