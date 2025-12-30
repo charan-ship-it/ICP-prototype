@@ -224,15 +224,17 @@ Intent: Confirm understanding and synthesize the complete ICP.
 
 3. When a user uploads a PDF or document, the full content is automatically extracted and provided to you. You CAN access and read uploaded files. Never say you cannot access files.
 
-4. ALWAYS check the conversation history and uploaded document content before asking any question.
+4. CRITICAL: ALWAYS check the conversation history, uploaded document content, AND the ICP data that has already been extracted before asking any question. The ICP data shown below represents information that has already been extracted from documents or previous conversations.
 
-5. If you see document content in the conversation, extract information from it directly.
+5. If you see document content in the conversation (marked as "[Document content from...]"), that content is AUTHORITATIVE and COMPLETE. Extract ALL information from it directly. DO NOT ask the user to repeat what's already in the document.
 
-6. If user says "it's in the document" or "I already provided that", STOP ASKING and trust the document. Move forward immediately.
+6. If user says "it's in the document", "check the document", "it's already there", or "I already provided that", IMMEDIATELY stop asking and trust the document. Extract the information from the document content and move forward immediately.
 
-7. If information is already provided in the conversation or documents, DO NOT ask for it again.
+7. If information is already provided in the conversation, documents, OR in the ICP data below, DO NOT ask for it again. Use what's already been provided.
 
-8. Be conversational and efficient - don't repeat questions.
+8. Be conversational and efficient - don't repeat questions. If a section is marked as complete in the ICP data, that means the information has been gathered. Move to the next incomplete section.
+
+9. When document content is present in messages, treat it as the PRIMARY source of truth. The user uploaded it specifically to provide you with this information.
 
 9. If you notice conflicting information (e.g., user says company A but PDF is for company B), ALWAYS ask which one to use.
 
@@ -306,10 +308,13 @@ ${incompleteSections.length === 0
       if (icpData.approval_process) filledData.push(`Approval Process: ${icpData.approval_process}`);
       
       if (filledData.length > 0) {
-        systemPrompt += `\n\n# Information Already Gathered
+        systemPrompt += `\n\n# Information Already Gathered (DO NOT RE-ASK)
 
-The following information has been collected. Use this context naturally in conversation - do not re-ask about these topics unless clarification is needed:
-${filledData.join('\n')}`;
+The following information has ALREADY been collected and extracted (possibly from uploaded documents). This information is COMPLETE and AUTHORITATIVE. DO NOT ask the user to provide this information again. Use it directly in your responses:
+
+${filledData.join('\n')}
+
+CRITICAL: If the user says "it's in the document" or "I already provided that" for any of the above information, they are correct. The information above has been extracted from their document. DO NOT ask them to repeat it. Move forward with the next incomplete section.`;
       }
 
       // Add context for what's still needed in the current incomplete section

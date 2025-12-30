@@ -167,15 +167,15 @@ export default function ChatArea({
             
             {voiceState === 'speaking' && (
               <div className="flex gap-4 animate-fade-in">
-                <div className="flex-shrink-0 flex items-start">
+                <div className="flex-shrink-0 flex items-center">
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
                     <Bot className="h-4 w-4" />
                   </div>
                 </div>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 flex items-center">
                   <div className="inline-block rounded-2xl bg-muted/80 px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 items-center">
                         {[0, 1, 2, 3, 4].map((i) => (
                           <div
                             key={i}

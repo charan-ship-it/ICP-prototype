@@ -167,10 +167,8 @@ export async function POST(request: NextRequest) {
       ...detectedICP,
     };
 
-    // Update section completion
-    let completedICP = updateSectionCompletion(updatedICP as ICPData);
-    
     // If document is comprehensive and has most fields, mark all relevant sections as complete
+    // This should be done BEFORE updateSectionCompletion to preserve document-based completion
     const hasCompanyInfo = detectedICP.company_name || detectedICP.industry || detectedICP.company_size || detectedICP.location;
     const hasTargetInfo = detectedICP.target_customer_type || detectedICP.target_demographics || detectedICP.target_psychographics;
     const hasPainInfo = detectedICP.pain_points || detectedICP.main_problems || detectedICP.current_solutions;
@@ -185,27 +183,38 @@ export async function POST(request: NextRequest) {
       hasBudgetInfo,
     });
     
-    // Mark sections as complete if document has the info
+    // Mark sections as complete if document has the info (do this BEFORE updateSectionCompletion)
     if (hasCompanyInfo) {
-      completedICP.company_basics_complete = true;
+      updatedICP.company_basics_complete = true;
       console.log('[PDF Processing] Marked company_basics_complete = true');
     }
     if (hasTargetInfo) {
-      completedICP.target_customer_complete = true;
+      updatedICP.target_customer_complete = true;
       console.log('[PDF Processing] Marked target_customer_complete = true');
     }
     if (hasPainInfo) {
-      completedICP.problem_pain_complete = true;
+      updatedICP.problem_pain_complete = true;
       console.log('[PDF Processing] Marked problem_pain_complete = true');
     }
     if (hasBuyingInfo) {
-      completedICP.buying_process_complete = true;
+      updatedICP.buying_process_complete = true;
       console.log('[PDF Processing] Marked buying_process_complete = true');
     }
     if (hasBudgetInfo) {
-      completedICP.budget_decision_complete = true;
+      updatedICP.budget_decision_complete = true;
       console.log('[PDF Processing] Marked budget_decision_complete = true');
     }
+
+    // Update section completion (this will preserve the true values we just set above)
+    // Only update sections that weren't already marked complete by document processing
+    let completedICP = updateSectionCompletion(updatedICP as ICPData);
+    
+    // Preserve document-based completion flags (don't let updateSectionCompletion override them)
+    if (hasCompanyInfo) completedICP.company_basics_complete = true;
+    if (hasTargetInfo) completedICP.target_customer_complete = true;
+    if (hasPainInfo) completedICP.problem_pain_complete = true;
+    if (hasBuyingInfo) completedICP.buying_process_complete = true;
+    if (hasBudgetInfo) completedICP.budget_decision_complete = true;
 
     // Save to database
     // First try to get existing record

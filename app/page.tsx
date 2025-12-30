@@ -518,10 +518,11 @@ export default function Home() {
           }
           
           // Store extracted text for AI context (don't show to user)
+          // Format it clearly so AI recognizes this as authoritative document content
           if (processData.extractedText) {
             finalContent = content 
-              ? `${content}\n\n[Document content from ${file.name}]:\n${processData.extractedText}`
-              : `[Document content from ${file.name}]:\n${processData.extractedText}`;
+              ? `${content}\n\n=== DOCUMENT CONTENT (AUTHORITATIVE SOURCE) ===\n[Document: ${file.name}]\n\n${processData.extractedText}\n\n=== END DOCUMENT CONTENT ===\n\nIMPORTANT: All information in the document above is COMPLETE and AUTHORITATIVE. Extract all ICP information from it directly. Do NOT ask the user to repeat information that is already in this document.`
+              : `=== DOCUMENT CONTENT (AUTHORITATIVE SOURCE) ===\n[Document: ${file.name}]\n\n${processData.extractedText}\n\n=== END DOCUMENT CONTENT ===\n\nIMPORTANT: All information in the document above is COMPLETE and AUTHORITATIVE. Extract all ICP information from it directly. Do NOT ask the user to repeat information that is already in this document.`;
           }
         } else {
           // For text files, just read content (no ICP extraction)
@@ -779,6 +780,7 @@ export default function Home() {
     }
     
     // Call AI API with streaming
+    let timeoutId: NodeJS.Timeout | undefined;
     try {
       const aiResponse = await fetch('/api/ai/chat', {
         method: 'POST',
@@ -795,11 +797,31 @@ export default function Home() {
 
       // Handle streaming response
       const reader = aiResponse.body?.getReader();
+      if (!reader) {
+        throw new Error('Failed to get response reader');
+      }
+      
       const decoder = new TextDecoder();
       let fullContent = '';
       let messageId = `temp-${Date.now()}`;
       let firstTokenReceived = false;
       const firstTokenTime = Date.now();
+      
+      // Add timeout to prevent getting stuck (5 minutes max)
+      const timeoutDuration = 5 * 60 * 1000; // 5 minutes
+      timeoutId = setTimeout(() => {
+        console.error('[OpenAI Stream] Timeout after 5 minutes, aborting stream');
+        reader.cancel();
+        abortController.abort();
+        setIsLoading(false);
+        const timeoutMessage = {
+          id: `timeout-${Date.now()}`,
+          role: 'assistant' as const,
+          content: 'Sorry, the response took too long. Please try again.',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, timeoutMessage]);
+      }, timeoutDuration);
 
       // Create initial streaming message
       // If we have ICP extraction, start with the summary
@@ -838,14 +860,19 @@ export default function Home() {
       }
 
       // Read stream
-      if (reader) {
+      try {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            console.log('[OpenAI Stream] Stream done');
+            clearTimeout(timeoutId);
+            break;
+          }
 
           // Check if aborted (barge-in)
           if (abortController.signal.aborted) {
             console.log('[OpenAI Stream] Aborted due to barge-in');
+            clearTimeout(timeoutId);
             break;
           }
 
@@ -1005,6 +1032,16 @@ export default function Home() {
             }
           }
         }
+      } catch (streamError: any) {
+        console.error('[OpenAI Stream] Stream reading error:', streamError);
+        clearTimeout(timeoutId);
+        // If reader error, try to cancel it
+        try {
+          reader.cancel();
+        } catch (cancelError) {
+          // Ignore cancel errors
+        }
+        throw streamError;
       }
 
       // Note: ICP analysis is already handled in the streaming handler above
@@ -1025,6 +1062,9 @@ export default function Home() {
           chatId 
         });
         // Don't show error message for intentional abort
+        setIsLoading(false);
+        currentAbortControllerRef.current = null;
+        voiceHook.setOpenAIAbortController(null);
         return;
       }
       
@@ -1033,18 +1073,26 @@ export default function Home() {
         chatId 
       });
       console.error('Error getting AI response:', error);
+      
       // Show error message to user
       const errorMessage = {
         id: `error-${Date.now()}`,
         role: 'assistant' as const,
-        content: 'Sorry, I encountered an error. Please try again.',
+        content: error.message?.includes('timeout') || error.message?.includes('took too long')
+          ? 'Sorry, the response took too long. Please try again.'
+          : 'Sorry, I encountered an error. Please try again.',
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
+      // CRITICAL: Always reset loading state, even if there was an error
       setIsLoading(false);
       currentAbortControllerRef.current = null; // Clear abort controller
       voiceHook.setOpenAIAbortController(null); // Clear in voice hook
+      // Clear timeout if it still exists (in case stream completed normally)
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }, [sessionId, selectedChatId, chats, icpData, voiceHook, loadChats, loadICPData]);
 
