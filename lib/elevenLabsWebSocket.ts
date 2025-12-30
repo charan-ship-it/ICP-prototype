@@ -41,7 +41,7 @@ export class ElevenLabsWebSocketManager {
   constructor(options: TTSOptions) {
     this.options = {
       voiceId: options.voiceId,
-      modelId: options.modelId || 'eleven_multilingual_v2',
+      modelId: options.modelId || 'eleven_flash_v2_5', // Use flash model for lower latency
       voiceSettings: {
         stability: options.voiceSettings?.stability ?? 0.5,
         similarityBoost: options.voiceSettings?.similarityBoost ?? 0.75,
@@ -149,7 +149,8 @@ export class ElevenLabsWebSocketManager {
       text: ' ', // Initial text to establish connection
       voice_settings: this.options.voiceSettings,
       generation_config: {
-        chunk_length_schedule: [120, 160, 250, 290],
+        // Smaller chunks for faster first audio (lower latency)
+        chunk_length_schedule: [50, 90, 120, 150, 200],
       },
     };
 

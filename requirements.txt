@@ -1,8 +1,0 @@
-# This is a Node.js/TypeScript project, not Python
-# Dependencies are managed via package.json and npm
-# 
-# To install dependencies, run: npm install
-#
-# If you have Python scripts in this project, add them below:
-# (Currently, no Python dependencies are required)
-

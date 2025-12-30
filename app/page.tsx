@@ -64,6 +64,12 @@ export default function Home() {
       }
     },
     onTextSpoken: (spokenText) => {
+      // CRITICAL FIX: Only update messages if voice is actually active
+      // This prevents unnecessary updates when voice mode is off
+      if (!voiceHook.isActive) {
+        return; // Don't update if voice not active
+      }
+      
       // CRITICAL: Update message display with text that's being spoken
       // This synchronizes text display with audio playback
       try {
@@ -153,6 +159,15 @@ export default function Home() {
   const handleNewChat = async () => {
     if (!sessionId) return;
 
+    // CRITICAL FIX: If voice is active, end it before creating new chat
+    // This prevents conflicts between voice and new chat
+    if (voiceHook.isActive) {
+      console.log('[handleNewChat] Voice active - ending voice mode before creating new chat');
+      await voiceHook.endConversation();
+      conversationChatIdRef.current = null;
+      conversationIdRef.current = null;
+    }
+
     try {
       const response = await fetch('/api/chats', {
         method: 'POST',
@@ -164,6 +179,8 @@ export default function Home() {
 
       const newChat = await response.json();
       setSelectedChatId(newChat.id);
+      // CRITICAL FIX: Sync conversationChatIdRef for new chat
+      conversationChatIdRef.current = newChat.id;
       setMessages([]);
       setIcpData(null);
       setProgress(0);
@@ -216,7 +233,22 @@ export default function Home() {
 
   // Select a chat and load its messages and ICP data
   const handleSelectChat = async (chatId: string) => {
+    // CRITICAL FIX: If voice is active, end it before switching chats
+    // This prevents messages going to wrong chats
+    if (voiceHook.isActive) {
+      console.log('[handleSelectChat] Voice active - ending voice mode before switching chats');
+      await voiceHook.endConversation();
+      // Clear voice conversation refs since we're switching to a different chat
+      conversationChatIdRef.current = null;
+      conversationIdRef.current = null;
+    }
+    
     setSelectedChatId(chatId);
+    // CRITICAL FIX: Sync conversationChatIdRef when voice is NOT active
+    // This ensures both systems use the same chatId
+    if (!voiceHook.isActive) {
+      conversationChatIdRef.current = chatId;
+    }
     setIsLoading(true);
 
     try {
@@ -354,6 +386,9 @@ export default function Home() {
         
         if (file.type === 'application/pdf') {
           // Process PDF: extract text, parse ICP fields, auto-fill ICP data
+          if (!chatId) {
+            throw new Error('ChatId is required for file processing');
+          }
           const formData = new FormData();
           formData.append('file', file);
           formData.append('chatId', chatId);
@@ -1000,8 +1035,6 @@ export default function Home() {
             isLoading={isLoading}
             voiceState={voiceHook.state}
             isVoiceActive={voiceHook.isActive}
-            voiceTranscript={voiceHook.transcript}
-            voiceLiveTranscript={voiceHook.liveTranscript}
           />
           {/* ICP Confirmation Cards */}
           {showICPCards && pendingICPData && (
@@ -1125,7 +1158,7 @@ export default function Home() {
           
           <ChatInput 
             onSend={handleSendMessage} 
-            disabled={isLoading} 
+            disabled={isLoading || voiceHook.isActive} 
             voiceActive={voiceHook.isActive}
           />
         </div>

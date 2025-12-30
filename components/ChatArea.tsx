@@ -1,6 +1,15 @@
 "use client";
 
-import { MessageCircle, Sparkles, Mic, Brain, Volume2, FileText } from "lucide-react";
+/**
+ * ChatArea - Main chat display component
+ * 
+ * For voice mode:
+ * - No live transcription shown (like ChatGPT)
+ * - Simple state indicators (Thinking, Speaking)
+ * - Messages appear only after fully processed
+ */
+
+import { MessageCircle, Sparkles, Brain, Volume2, FileText } from "lucide-react";
 import FileAttachmentCard from "./FileAttachmentCard";
 import ICPConfirmationCard from "./ICPConfirmationCard";
 import { MessageDisplay } from "@/types/chat";
@@ -143,37 +152,6 @@ export default function ChatArea({
             
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
             
-            {/* Temporarily disabled - showing wrong values
-            {message.role === "assistant" && message.icpExtraction && message.icpExtraction.filledSections && message.icpExtraction.filledSections.length > 0 && (
-              <div className="mt-4 space-y-3">
-                <p className="text-xs font-medium text-muted-foreground mb-2">
-                  Auto-filled ICP sections (please confirm or edit):
-                </p>
-                {message.icpExtraction.filledSections.map((section) => {
-                  const fields = getSectionFields(section, message.icpExtraction!.extractedFields);
-                  if (fields.length === 0) return null;
-                  
-                  return (
-                    <ICPConfirmationCard
-                      key={section}
-                      section={section}
-                      fields={fields}
-                      onConfirm={() => {
-                        if (onConfirmSection) {
-                          onConfirmSection(section);
-                        }
-                      }}
-                      onEdit={(field, value) => {
-                        if (onEditField) {
-                          onEditField(field, value);
-                        }
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            )}
-            */}
             {message.timestamp && (
               <p className={`mt-2 text-xs ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                 {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -183,56 +161,40 @@ export default function ChatArea({
         </div>
       ))}
       
-      {/* Voice Mode Active Indicators */}
+      {/* Voice Mode State Indicators - Simplified (no live transcript) */}
       {isVoiceActive && (
         <>
-          {/* Listening State - Show live transcript */}
-          {voiceState === 'listening' && (voiceTranscript || voiceLiveTranscript) && (
-            <div className="flex w-full justify-end animate-in fade-in slide-in-from-bottom-2">
-              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl px-4 py-3 bg-primary/10 border-2 border-primary/30">
-                <div className="flex items-center gap-2 mb-2">
-                  <Mic className="h-3.5 w-3.5 text-primary animate-pulse" />
-                  <span className="text-xs font-medium text-primary">You (speaking...)</span>
-                </div>
-                <p className="text-sm leading-relaxed text-foreground">
-                  {voiceTranscript && <span className="opacity-70">{voiceTranscript} </span>}
-                  {voiceLiveTranscript && <span className="font-medium">{voiceLiveTranscript}</span>}
-                </p>
-              </div>
-            </div>
-          )}
-          
-          {/* Thinking State */}
+          {/* Thinking State - AI is processing */}
           {voiceState === 'thinking' && (
             <div className="flex w-full justify-start animate-in fade-in">
-              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-yellow-500/10 px-4 py-3 border-2 border-yellow-500/30">
+              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-amber-500/10 px-4 py-3 border-2 border-amber-500/30">
                 <div className="flex items-center gap-3">
-                  <Brain className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
-                  <div className="flex gap-1">
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-yellow-600 dark:bg-yellow-500 [animation-delay:-0.3s]"></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-yellow-600 dark:bg-yellow-500 [animation-delay:-0.15s]"></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-yellow-600 dark:bg-yellow-500"></div>
+                  <Brain className="h-4 w-4 text-amber-600 dark:text-amber-500" />
+                  <div className="flex gap-1.5">
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-amber-600 dark:bg-amber-500" style={{ animationDelay: '0ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-amber-600 dark:bg-amber-500" style={{ animationDelay: '150ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-amber-600 dark:bg-amber-500" style={{ animationDelay: '300ms' }}></div>
                   </div>
-                  <span className="text-xs font-medium text-yellow-700 dark:text-yellow-400">AI is thinking...</span>
+                  <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Processing your message...</span>
                 </div>
               </div>
             </div>
           )}
           
-          {/* Speaking State */}
+          {/* Speaking State - AI is responding */}
           {voiceState === 'speaking' && (
             <div className="flex w-full justify-start animate-in fade-in">
-              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-green-500/10 px-4 py-3 border-2 border-green-500/30">
+              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-emerald-500/10 px-4 py-3 border-2 border-emerald-500/30">
                 <div className="flex items-center gap-3">
-                  <Volume2 className="h-4 w-4 text-green-600 dark:text-green-500 animate-pulse" />
-                  <div className="flex gap-1">
-                    <div className="h-3 w-1 bg-green-600 dark:bg-green-500 animate-[pulse_0.6s_ease-in-out_infinite]" />
-                    <div className="h-4 w-1 bg-green-600 dark:bg-green-500 animate-[pulse_0.6s_ease-in-out_infinite_0.2s]" />
-                    <div className="h-5 w-1 bg-green-600 dark:bg-green-500 animate-[pulse_0.6s_ease-in-out_infinite_0.4s]" />
-                    <div className="h-4 w-1 bg-green-600 dark:bg-green-500 animate-[pulse_0.6s_ease-in-out_infinite_0.2s]" />
-                    <div className="h-3 w-1 bg-green-600 dark:bg-green-500 animate-[pulse_0.6s_ease-in-out_infinite]" />
+                  <Volume2 className="h-4 w-4 text-emerald-600 dark:text-emerald-500 animate-pulse" />
+                  <div className="flex gap-0.5 items-end">
+                    <div className="h-2 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite]" />
+                    <div className="h-3 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.1s]" />
+                    <div className="h-4 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.2s]" />
+                    <div className="h-3 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.3s]" />
+                    <div className="h-2 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.4s]" />
                   </div>
-                  <span className="text-xs font-medium text-green-700 dark:text-green-400">AI is speaking...</span>
+                  <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">AI is speaking...</span>
                 </div>
               </div>
             </div>

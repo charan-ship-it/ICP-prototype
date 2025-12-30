@@ -1,6 +1,8 @@
 /**
  * Text Buffer for TTS Streaming
- * Buffers text chunks until threshold (50-100 chars) or sentence boundary
+ * 
+ * Buffers text chunks until ready to flush to TTS.
+ * Optimized for low latency - sends smaller chunks faster.
  */
 
 export interface BufferOptions {
@@ -15,10 +17,11 @@ export class TextBuffer {
   private maxChars: number;
   private sentenceBoundaries: boolean;
   private onFlushCallback?: (text: string) => void;
+  private isFirstFlush: boolean = true;
 
   constructor(options: BufferOptions = {}) {
-    this.minChars = options.minChars || 50;
-    this.maxChars = options.maxChars || 100;
+    this.minChars = options.minChars || 30;  // Smaller buffer for faster start
+    this.maxChars = options.maxChars || 60;  // Flush sooner
     this.sentenceBoundaries = options.sentenceBoundaries !== false;
   }
 
@@ -38,28 +41,34 @@ export class TextBuffer {
    * Check if buffer should be flushed
    */
   private shouldFlush(): boolean {
+    // For first flush, use lower threshold for faster speech start
+    const effectiveMinChars = this.isFirstFlush ? 15 : this.minChars;
+    const effectiveMaxChars = this.isFirstFlush ? 40 : this.maxChars;
+
     // Flush if we've reached max chars
-    if (this.buffer.length >= this.maxChars) {
+    if (this.buffer.length >= effectiveMaxChars) {
       return true;
     }
 
     // Flush if we have min chars and hit a sentence boundary
-    if (this.sentenceBoundaries && this.buffer.length >= this.minChars) {
+    if (this.sentenceBoundaries && this.buffer.length >= effectiveMinChars) {
       // Check for sentence boundaries: . ! ? followed by space or end
       const sentenceEndMatch = this.buffer.match(/[.!?]\s/);
       if (sentenceEndMatch?.index !== undefined) {
-        // Found sentence boundary
+        return true;
+      }
+      
+      // Also check for comma/colon with space (natural pause points)
+      const pauseMatch = this.buffer.match(/[,:;]\s/);
+      if (pauseMatch?.index !== undefined && this.buffer.length >= 20) {
         return true;
       }
     }
 
-    // NEW: For first chunk, flush earlier to start speaking faster
-    // This reduces latency when OpenAI starts streaming
-    if (this.buffer.length >= 20 && this.buffer.length < this.minChars) {
-      // Check for word boundaries (space) to avoid cutting words
+    // For first chunk, flush even earlier if we have enough content
+    if (this.isFirstFlush && this.buffer.length >= 12) {
       const lastSpaceIndex = this.buffer.lastIndexOf(' ');
-      if (lastSpaceIndex > 10) {
-        // We have enough text and a word boundary, flush early
+      if (lastSpaceIndex > 8) {
         return true;
       }
     }
@@ -77,6 +86,7 @@ export class TextBuffer {
 
     const text = this.buffer;
     this.buffer = '';
+    this.isFirstFlush = false; // After first flush, use normal thresholds
     
     this.onFlushCallback?.(text);
     return text;
@@ -94,6 +104,7 @@ export class TextBuffer {
    */
   clear(): void {
     this.buffer = '';
+    this.isFirstFlush = true; // Reset for next conversation
   }
 
   /**
@@ -117,4 +128,3 @@ export class TextBuffer {
     this.onFlushCallback = callback;
   }
 }
-

@@ -1,6 +1,6 @@
 /**
  * Audio Player for streaming audio chunks
- * Handles real-time audio playback from WebSocket chunks
+ * Handles real-time audio playback from WebSocket TTS chunks
  */
 
 export class AudioPlayer {
@@ -9,6 +9,7 @@ export class AudioPlayer {
   private audioQueue: ArrayBuffer[] = [];
   private isPlaying: boolean = false;
   private isPaused: boolean = false;
+  private isStopping: boolean = false; // Flag to prevent race conditions
   private onEndedCallback?: () => void;
   private onErrorCallback?: (error: Error) => void;
 
@@ -38,8 +39,8 @@ export class AudioPlayer {
       await this.initialize();
     }
 
-    if (!this.audioContext) {
-      throw new Error('Failed to initialize audio context');
+    if (!this.audioContext || this.isStopping) {
+      return;
     }
 
     try {
@@ -58,16 +59,15 @@ export class AudioPlayer {
       source.onended = () => {
         this.sourceNode = null;
         
-        // CRITICAL FIX: Check if we're stopping - if so, don't process queue
+        // Check if we're stopping - if so, don't process queue
         if (this.isStopping) {
           return;
         }
         
         if (this.audioQueue.length > 0) {
-          // Play next chunk in queue (use setTimeout to prevent stack overflow)
+          // Play next chunk in queue
           const nextChunk = this.audioQueue.shift()!;
           setTimeout(() => {
-            // Check again before playing (in case stop was called during setTimeout)
             if (this.isStopping) {
               return;
             }
@@ -81,17 +81,14 @@ export class AudioPlayer {
                 this.playChunk(chunk).catch((err) => {
                   console.error('[AudioPlayer] Error in queue continuation:', err);
                 });
-              } else {
-                // BUG FIX: Set isPlaying to false BEFORE calling onEnded
-                // This ensures state is correct when callback checks it
+              } else if (!this.isStopping) {
                 this.isPlaying = false;
                 this.onEndedCallback?.();
               }
             });
           }, 0);
         } else {
-          // BUG FIX: Set isPlaying to false BEFORE calling onEnded
-          // This ensures state is correct when callback checks it
+          // Queue empty - playback complete
           this.isPlaying = false;
           this.onEndedCallback?.();
         }
@@ -111,12 +108,11 @@ export class AudioPlayer {
    * Queue audio chunk for playback
    */
   queueChunk(audioData: ArrayBuffer): void {
-    this.audioQueue.push(audioData);
-    
-    // Log queue length periodically (every 5 chunks)
-    if (this.audioQueue.length % 5 === 0) {
-      console.log(`[AudioPlayer] Queue length: ${this.audioQueue.length}`);
+    if (this.isStopping) {
+      return; // Don't queue if stopping
     }
+    
+    this.audioQueue.push(audioData);
     
     if (!this.isPlaying && !this.isPaused) {
       // Start playing if not already playing
@@ -131,10 +127,10 @@ export class AudioPlayer {
   }
 
   /**
-   * Stop playback - CRITICAL FIX: Prevent race condition
+   * Stop playback immediately
    */
   stop(): void {
-    // CRITICAL FIX: Set flag FIRST to prevent onended from processing queue
+    // Set flag FIRST to prevent onended from processing queue
     this.isStopping = true;
     
     // Clear queue BEFORE stopping node to prevent race condition
@@ -152,7 +148,7 @@ export class AudioPlayer {
     this.isPlaying = false;
     this.isPaused = false;
     
-    // Reset flag after a short delay to allow onended to complete
+    // Reset flag after a short delay
     setTimeout(() => {
       this.isStopping = false;
     }, 50);
@@ -179,7 +175,18 @@ export class AudioPlayer {
   }
 
   /**
-   * Cleanup
+   * Reset player for new audio stream
+   */
+  reset(): void {
+    this.stop();
+    this.audioQueue = [];
+    setTimeout(() => {
+      this.isStopping = false;
+    }, 10);
+  }
+
+  /**
+   * Cleanup resources
    */
   cleanup(): void {
     this.stop();
@@ -217,4 +224,3 @@ export class AudioPlayer {
     return this.isPaused;
   }
 }
-

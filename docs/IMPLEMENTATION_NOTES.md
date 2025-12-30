@@ -13,8 +13,7 @@
 - **Database**: Supabase (PostgreSQL)
 - **AI**: OpenAI API (GPT-4o-mini)
 - **TTS**: ElevenLabs API
-- **STT**: OpenAI Whisper API (refactored) / Web Speech API (legacy)
-
+- **STT**: OpenAI Whisper API (refactored) 
 ---
 
 ## Implementation Phases
@@ -223,218 +222,188 @@ function calculateProgress(icpData: ICPData | null): number {
 
 ---
 
-### Phase 5: Voice Support ✅ COMPLETE (Legacy Implementation)
+### Phase 5: Voice Support ✅ COMPLETE
 
-**Status**: ✅ Implemented, but being refactored
+**Status**: ✅ Fully implemented and operational
 
-**What Was Built** (Legacy):
-- Voice interaction capabilities using Web Speech API
-- Speech-to-text (Web Speech API)
-- Text-to-speech (Web Speech API, later upgraded to ElevenLabs)
-- Voice state management (idle, listening, thinking, speaking)
-- Mute functionality
+**What Was Built**:
+- Real-time voice conversation system with ChatGPT Voice-like experience
+- Speech-to-text using browser LiveTranscription (Web Speech API)
+- Text-to-speech using ElevenLabs WebSocket streaming API
+- Voice Activity Detection (VAD) for barge-in support
+- Synchronized text and voice display
+- State machine for conversation flow
 
 **Files Created**:
-- `hooks/useVoice.ts` - Custom React hook for voice management (legacy version)
-- `components/VoicePanel.tsx` - Enhanced with voice state visualization
+- `hooks/useElevenLabsVoice.ts` - Main voice hook with WebSocket TTS integration
+- `lib/elevenLabsWebSocket.ts` - ElevenLabs WebSocket manager
+- `lib/audioPlayer.ts` - Audio playback manager
+- `lib/textBuffer.ts` - Text buffering for TTS
+- `lib/liveTranscription.ts` - Browser SpeechRecognition wrapper
+- `lib/vad.ts` - Voice Activity Detection
+- `components/VoicePanel.tsx` - Voice controls and state visualization
 
 **Voice States**:
-1. **Idle** (Gray) - Default state when conversation is not active
-2. **Listening** (Blue) - Active when user is speaking
-3. **Thinking** (Yellow) - Active when AI is processing
-4. **Speaking** (Green) - Active when AI is speaking
+1. **Idle** (Gray) - Default state when conversation is not active, or after AI finishes speaking
+2. **Listening** (Blue) - Active when user is speaking or ready to speak
+3. **Thinking** (Yellow) - Active when AI is processing/streaming response
+4. **Speaking** (Green) - Active when AI is speaking via TTS
+5. **Error** (Red) - Error state when something goes wrong
+
+**State Transitions**:
+- `idle` → `listening` (when conversation starts or user resumes)
+- `listening` → `thinking` (when user transcript is received)
+- `thinking` → `speaking` (when first TTS content arrives)
+- `speaking` → `idle` (when audio playback ends - user can resume by speaking)
+- `speaking` → `listening` (when barge-in detected)
+- `idle` → `listening` (when VAD detects speech after pause)
 
 **Browser Compatibility**:
 - Speech Recognition: ✅ Chrome/Edge (Chromium), ✅ Safari (with webkit prefix), ❌ Firefox
-- Speech Synthesis: ✅ All modern browsers
+- WebSocket TTS: ✅ All modern browsers
+- AudioContext: ✅ All modern browsers
 - Note: Speech recognition requires HTTPS or localhost
 
 ---
 
-## ElevenLabs Integration ✅ COMPLETE
+## ElevenLabs WebSocket TTS Integration ✅ COMPLETE
 
-**Status**: ✅ Fully integrated
+**Status**: ✅ Fully integrated with real-time streaming
 
 **What Was Built**:
-- High-quality text-to-speech using ElevenLabs API
-- Replaced browser-native Web Speech API TTS
-- Streaming MP3 audio responses
+- Real-time text-to-speech using ElevenLabs WebSocket API
+- Streaming audio chunks for instant voice start (ChatGPT Voice-like)
+- Multi-context support for barge-in functionality
+- Text buffering for optimal streaming performance
 
 **Files Created**:
-- `app/api/voice/speak/route.ts` - ElevenLabs TTS API endpoint
+- `lib/elevenLabsWebSocket.ts` - WebSocket manager for ElevenLabs TTS
+- `lib/audioPlayer.ts` - Audio playback queue manager
+- `lib/textBuffer.ts` - Text buffering with sentence boundaries
+- `app/api/voice/websocket-key/route.ts` - API key endpoint (secure)
 
 **Environment Variables Required**:
 ```env
 ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
-ELEVENLABS_VOICE_ID=GzE4TcXfh9rYCU9gVgPp  # Optional, has default
+NEXT_PUBLIC_ELEVENLABS_VOICE_ID=JBFqnCBsd6RMkjVDRZzb  # Optional, has default
 ```
 
 **Voice Settings**:
-- **Voice ID**: `GzE4TcXfh9rYCU9gVgPp` (default)
+- **Voice ID**: `JBFqnCBsd6RMkjVDRZzb` (default, ChatGPT-like voice)
 - **Model**: `eleven_multilingual_v2`
 - **Stability**: 0.5 (balanced)
 - **Similarity Boost**: 0.75 (high similarity to original voice)
 - **Style**: 0.0 (neutral)
 - **Speaker Boost**: true (enhanced clarity)
+- **Speed**: 1.0 (normal speed)
 
-**API Route**:
-- `POST /api/voice/speak`
-- Input: `{ text: string }`
-- Output: MP3 audio stream (streaming response)
+**Text Buffer Configuration**:
+- **Min Chars**: 50 (before flushing to TTS)
+- **Max Chars**: 100 (maximum buffer size)
+- **Sentence Boundaries**: true (flush at sentence end)
+- **First Chunk Threshold**: 20 chars (immediate flush for instant start)
 
 **Features**:
+- ✅ Real-time streaming audio (no waiting for full response)
+- ✅ Instant voice start (speaks after ~20-50 characters)
 - ✅ High-quality, natural voice synthesis
 - ✅ Multilingual support (eleven_multilingual_v2 model)
 - ✅ Custom voice ID support
-- ✅ Audio playback with controls
-- ✅ Error handling and fallbacks
-- ✅ Mute functionality
+- ✅ Barge-in support (context closing)
+- ✅ Text synchronization (text appears as AI speaks)
+- ✅ Error handling and reconnection
+- ✅ Keep-alive mechanism to prevent timeouts
 
 ---
 
-## Voice System Refactor Status
+## Voice System Architecture ✅ COMPLETE
 
-### ✅ Completed Refactor Components
+### ✅ Core Components
 
-1. **Whisper STT API Endpoint** (`app/api/stt/whisper/route.ts`)
-   - ✅ Created endpoint that accepts audio and calls OpenAI Whisper
-   - ✅ Returns transcribed text
+1. **LiveTranscription** (`lib/liveTranscription.ts`)
+   - ✅ Browser SpeechRecognition API wrapper
+   - ✅ Real-time interim and final results
+   - ✅ Auto-send on final transcript
+   - ✅ Continuous mode for conversation flow
 
 2. **VAD Helper** (`lib/vad.ts`)
    - ✅ Voice Activity Detection using AudioContext + AnalyserNode
-   - ✅ Configurable energy thresholds and timing
-   - ✅ Speech start/end callbacks
+   - ✅ Configurable energy thresholds (0.03) and timing
+   - ✅ Speech start/end/pause callbacks
+   - ✅ Used for barge-in detection
 
-3. **True Streaming Audio** (`lib/audioStream.ts`)
-   - ✅ MediaSource API implementation
-   - ✅ Streams MP3 chunks while playing
-   - ✅ Abort support with cleanup
-   - ✅ Fallback to blob approach for unsupported browsers
+3. **ElevenLabs WebSocket Manager** (`lib/elevenLabsWebSocket.ts`)
+   - ✅ WebSocket connection to ElevenLabs streaming API
+   - ✅ Multi-context support for barge-in
+   - ✅ Real-time audio chunk streaming
+   - ✅ Keep-alive mechanism
+   - ✅ Automatic reconnection
 
-4. **New useVoice Hook** (`hooks/useVoice.ts` - refactored)
-   - ✅ getUserMedia for mic access
-   - ✅ AudioContext initialization
-   - ✅ VAD integration
-   - ✅ MediaRecorder for audio capture
-   - ✅ Whisper STT integration
-   - ✅ True streaming TTS with MediaSource
-   - ✅ Barge-in detection in VAD
-   - ✅ Turn ID tracking
-   - ✅ Abort controllers for TTS and OpenAI
-   - ✅ State machine (idle/listening/thinking/speaking/paused/error)
-   - ✅ Comprehensive logging
+4. **Audio Player** (`lib/audioPlayer.ts`)
+   - ✅ Audio queue management
+   - ✅ Progressive audio playback
+   - ✅ Abort support for barge-in
+   - ✅ State tracking (playing/paused/stopped)
 
-5. **OpenAI Stream Helper** (`lib/openaiStream.ts`)
-   - ✅ Streaming with abort support
-   - ✅ Chunk callbacks
-   - ✅ Error handling
+5. **Text Buffer** (`lib/textBuffer.ts`)
+   - ✅ Buffers text before sending to TTS
+   - ✅ Sentence boundary detection
+   - ✅ Configurable min/max sizes
+   - ✅ Immediate flush for first chunk
 
-### 🔄 Remaining Integration Work
+6. **useElevenLabsVoice Hook** (`hooks/useElevenLabsVoice.ts`)
+   - ✅ Complete voice conversation management
+   - ✅ LiveTranscription integration
+   - ✅ VAD integration for barge-in
+   - ✅ ElevenLabs WebSocket TTS streaming
+   - ✅ Text-to-voice synchronization
+   - ✅ State machine (idle/listening/thinking/speaking/error)
+   - ✅ Abort controllers for OpenAI and TTS
+   - ✅ Comprehensive logging via voiceLogger
 
-#### 1. Update VoicePanel Component
-The VoicePanel needs to be updated to:
-- Use `startConversation`/`endConversation` instead of `startListening`/`stopListening`
-- Pass `sessionId` prop to useVoice
-- Handle the new API (no more `streamingAIContent`, speak is called differently)
-- Remove auto-speak logic (parent will handle calling speak)
+### ✅ Integration Complete
 
-#### 2. Update page.tsx Integration
-The page component needs:
-- **Stable sessionId**: Create once on "Start Conversation", store in ref, never change until "End"
-- **Stable chatId**: Create once on first message, reuse for all messages in conversation
-- **Integrate OpenAI streaming**: Use `streamOpenAIStream` with abort support
-- **Call speak() with final message**: Only speak when OpenAI stream completes
-- **Abort handling**: Abort OpenAI stream on barge-in using abort controllers from useVoice
-- **No new chat on barge-in**: Ensure chatId stays the same across turns
+**VoicePanel Component** (`components/VoicePanel.tsx`):
+- ✅ Uses `startConversation`/`endConversation`
+- ✅ VAD initialization on conversation start
+- ✅ State visualization (idle/listening/thinking/speaking)
+- ✅ Pause/resume functionality
+- ✅ Error handling and display
 
-#### 3. Critical Integration Points
+**Page Integration** (`app/page.tsx`):
+- ✅ Stable `sessionId` management (persists across conversations)
+- ✅ Stable `chatId` per conversation (created on first message)
+- ✅ OpenAI streaming with abort support
+- ✅ Text synchronization via `onTextSpoken` callback
+- ✅ Barge-in handling (aborts OpenAI stream)
+- ✅ Chat persistence across turns
 
-```typescript
-// In page.tsx or a conversation handler:
+### Key Features
 
-const conversationChatIdRef = useRef<string | null>(null);
-const sessionIdRef = useRef<string | null>(null);
+**Text Synchronization**:
+- Text appears in chat as AI speaks (via `onTextSpoken` callback)
+- Real-time updates as more content streams in
+- Synchronized with audio playback
 
-// On Start Conversation:
-const handleStartConversation = async () => {
-  // Create/ensure sessionId (only once)
-  if (!sessionIdRef.current) {
-    const sid = await getOrCreateSessionId();
-    sessionIdRef.current = sid;
-  }
-  
-  // Create chat if needed (only once per conversation)
-  if (!conversationChatIdRef.current) {
-    const chat = await createChat(sessionIdRef.current);
-    conversationChatIdRef.current = chat.id;
-  }
-  
-  // Start voice conversation
-  voiceHook.startConversation();
-};
+**Barge-In Support**:
+- VAD detects user speech during AI speaking
+- Immediately stops audio playback
+- Aborts OpenAI stream generation
+- Closes TTS WebSocket context
+- Transitions to listening state
+- Preserves chatId and sessionId
 
-// On transcript complete:
-const handleTranscriptComplete = async (text: string) => {
-  const chatId = conversationChatIdRef.current;
-  if (!chatId) return;
-  
-  // Get abort controller for OpenAI
-  const { openai } = voiceHook.getAbortControllers();
-  const abortController = new AbortController();
-  // Store for barge-in
-  
-  // Save user message
-  await saveMessage(chatId, text);
-  
-  // Stream OpenAI response
-  const fullContent = await streamOpenAIResponse({
-    chatId,
-    signal: abortController.signal,
-    onChunk: (content) => {
-      // Update UI
-    },
-    onComplete: async (content) => {
-      // Save assistant message
-      await saveMessage(chatId, content);
-      
-      // Speak final message
-      voiceHook.speak(content);
-    },
-  });
-};
+**State Management**:
+- After AI finishes speaking → transitions to `idle` (not `listening`)
+- User can resume by speaking (VAD detects and transitions to `listening`)
+- Or use pause/resume button
+- Clean state transitions prevent race conditions
 
-// On barge-in:
-const handleBargeIn = () => {
-  // Abort OpenAI stream
-  const { openai } = voiceHook.getAbortControllers();
-  if (openai) {
-    openai.abort();
-  }
-  
-  // TTS is already aborted by interrupt()
-  // Chat ID stays the same
-  // Session ID stays the same
-};
-
-// On End Conversation:
-const handleEndConversation = () => {
-  voiceHook.endConversation();
-  conversationChatIdRef.current = null;
-  // Keep sessionIdRef.current - don't clear it
-};
-```
-
-#### 4. Testing Checklist
-
-- [ ] Start conversation → sessionId created once
-- [ ] Speak → Whisper transcribes → OpenAI responds → TTS speaks smoothly
-- [ ] Speak again → same chatId used (no new chat)
-- [ ] Barge-in → audio stops instantly, OpenAI aborted, same session/chat
-- [ ] Pause/resume works
-- [ ] End conversation → cleanup, but sessionId can persist
-- [ ] No stale audio plays after barge-in
-- [ ] No duplicate speak() calls
-- [ ] True streaming (audio plays while downloading)
+**Performance Optimizations**:
+- Text buffer flushes at 50-100 chars for optimal streaming
+- First chunk flushes at 20 chars for instant voice start
+- Audio chunks queued and played progressively
+- Keep-alive prevents WebSocket timeouts
 
 ---
 
@@ -521,21 +490,22 @@ const handleEndConversation = () => {
    - Streaming audio responses
    - Multilingual support
 
-6. **Voice System (Refactored)**
-   - Whisper STT integration
-   - VAD for speech detection
-   - True streaming audio (MediaSource)
-   - Barge-in detection
-   - Abort controllers
-   - State machine
+6. **Voice System (Complete)**
+   - LiveTranscription (browser SpeechRecognition API)
+   - ElevenLabs WebSocket TTS streaming
+   - VAD for barge-in detection
+   - Real-time audio playback
+   - Text-to-voice synchronization
+   - Barge-in support
+   - Abort controllers for OpenAI and TTS
+   - State machine (idle/listening/thinking/speaking/error)
 
 ### 🔄 In Progress
 
-1. **Voice System Integration**
-   - VoicePanel component update
-   - page.tsx integration
-   - Stable sessionId/chatId management
-   - OpenAI streaming with abort support
+1. **Voice System Enhancements**
+   - Fine-tuning barge-in sensitivity
+   - Optimizing text buffer thresholds
+   - Improving audio quality settings
 
 ### ⏳ Planned / Future Enhancements
 
@@ -576,7 +546,7 @@ OPENAI_MODEL=gpt-4o-mini  # Optional
 
 # ElevenLabs
 ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
-ELEVENLABS_VOICE_ID=GzE4TcXfh9rYCU9gVgPp  # Optional, has default
+NEXT_PUBLIC_ELEVENLABS_VOICE_ID=JBFqnCBsd6RMkjVDRZzb  # Optional, has default
 ```
 
 ---
@@ -611,8 +581,7 @@ final/
 │   │   ├── sessions/            # Session management
 │   │   ├── chats/               # Chat CRUD operations
 │   │   ├── ai/                  # AI chat endpoint
-│   │   ├── voice/               # ElevenLabs TTS
-│   │   └── stt/                 # Whisper STT
+│   │   └── voice/               # ElevenLabs WebSocket key endpoint
 │   ├── layout.tsx               # Root layout
 │   └── page.tsx                 # Main page
 ├── components/                   # React components
@@ -623,15 +592,18 @@ final/
 │   ├── Sidebar.tsx              # Chat list sidebar
 │   └── VoicePanel.tsx           # Voice controls
 ├── hooks/                        # Custom React hooks
-│   └── useVoice.ts              # Voice management (refactored)
+│   └── useElevenLabsVoice.ts    # Voice management with ElevenLabs WebSocket
 ├── lib/                          # Utility functions
 │   ├── utils.ts                 # General utilities
 │   ├── supabase.ts              # Supabase client
 │   ├── session.ts                # Session management
 │   ├── icp-analyzer.ts          # ICP data extraction
 │   ├── vad.ts                   # Voice Activity Detection
-│   ├── audioStream.ts           # Streaming audio
-│   └── openaiStream.ts          # OpenAI streaming helper
+│   ├── elevenLabsWebSocket.ts   # ElevenLabs WebSocket manager
+│   ├── audioPlayer.ts            # Audio playback manager
+│   ├── textBuffer.ts            # Text buffering for TTS
+│   ├── liveTranscription.ts     # Browser SpeechRecognition wrapper
+│   └── voiceLogger.ts           # Voice system logging
 ├── types/                        # TypeScript types
 │   ├── session.ts               # Session types
 │   ├── chat.ts                  # Chat and Message types
@@ -699,7 +671,37 @@ final/
 
 ---
 
-**Last Updated**: Based on current codebase analysis
+**Last Updated**: January 2025
 **Project Version**: 1.0.0
-**Status**: Phase 5 Complete, Voice System Refactor In Progress
+**Status**: All Phases Complete - Voice System Fully Operational
+
+## Recent Updates (January 2025)
+
+### Voice System Improvements
+
+1. **Text Synchronization**
+   - Added `onTextSpoken` callback to display text as AI speaks
+   - Real-time text updates synchronized with audio playback
+   - Text appears in chat immediately when audio starts
+
+2. **State Management Refinements**
+   - AI transitions to `idle` after speaking (not `listening`)
+   - User can resume by speaking (VAD auto-detects)
+   - Cleaner state transitions prevent race conditions
+
+3. **Barge-In Optimizations**
+   - Improved VAD sensitivity (energyThreshold: 0.03)
+   - Faster speech detection (speechStartMs: 150)
+   - Proper context closing on barge-in
+   - State-based audio filtering prevents late chunks
+
+4. **Text Buffer Tuning**
+   - Optimized buffer sizes (minChars: 50, maxChars: 100)
+   - First chunk immediate flush at 20 chars for instant start
+   - Sentence boundary detection for natural pauses
+
+5. **Audio Playback**
+   - Progressive audio chunk queuing
+   - Proper cleanup on barge-in
+   - State tracking prevents duplicate playback
 

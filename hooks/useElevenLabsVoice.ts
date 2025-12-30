@@ -1,10 +1,22 @@
 'use client';
 
+/**
+ * useElevenLabsVoice Hook - ChatGPT-like Voice Mode
+ * 
+ * Flow: idle → listening → processing → speaking → listening (loop)
+ * 
+ * Key behaviors (like ChatGPT):
+ * 1. Listen to complete utterance (no live transcription display)
+ * 2. Use VAD to detect when user finishes speaking
+ * 3. Send complete audio to ElevenLabs STT
+ * 4. Stream LLM response directly to TTS with minimal buffering
+ * 5. AI speaks while generating (not text-first-then-speak)
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { ElevenLabsWebSocketManager, TTSOptions } from '@/lib/elevenLabsWebSocket';
 import { TextBuffer } from '@/lib/textBuffer';
 import { AudioPlayer } from '@/lib/audioPlayer';
-import { LiveTranscription } from '@/lib/liveTranscription';
 import { voiceLogger } from '@/lib/voiceLogger';
 
 export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
@@ -13,11 +25,20 @@ interface UseElevenLabsVoiceOptions {
   onTranscriptComplete?: (text: string) => void;
   onBargeIn?: () => void;
   onError?: (error: Error) => void;
-  onTextSpoken?: (spokenText: string) => void; // New: callback when text is being spoken
+  onTextSpoken?: (spokenText: string) => void;
   sessionId: string | null;
   voiceId?: string;
   modelId?: string;
 }
+
+// VAD configuration - tuned for reliable detection
+const VAD_CONFIG = {
+  energyThreshold: 0.08,       // Higher threshold to ignore background noise (was too sensitive)
+  speechStartMs: 100,          // How long energy must be above threshold to start (faster)
+  silenceEndMs: 1200,          // How long silence before sending (1.2s - quick response)
+  minRecordingMs: 300,         // Minimum recording length to process
+  debugLogging: true,          // Enable debug logging for VAD
+};
 
 export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const {
@@ -27,12 +48,12 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     onTextSpoken,
     sessionId,
     voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb',
-    modelId = 'eleven_multilingual_v2',
+    modelId = 'eleven_flash_v2_5', // Use flash model for lower latency
   } = options;
 
   const [state, setState] = useState<VoiceState>('idle');
   const [transcript, setTranscript] = useState('');
-  const [liveTranscript, setLiveTranscript] = useState('');
+  const [liveTranscript, setLiveTranscript] = useState(''); // Keep for API compatibility but won't use
   const [isActive, setIsActive] = useState<boolean>(false);
 
   // Refs
@@ -40,43 +61,59 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
   const textBufferRef = useRef<TextBuffer | null>(null);
   const isActiveRef = useRef<boolean>(false);
-  const isRecordingRef = useRef<boolean>(false);
+  const stateRef = useRef<VoiceState>('idle');
+  
+  // Recording refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
+  const isRecordingRef = useRef<boolean>(false);
+  const recordingStartTimeRef = useRef<number>(0);
+  
+  // VAD refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const vadFrameIdRef = useRef<number | null>(null);
+  const isSpeakingRef = useRef<boolean>(false);
+  const speechStartTimeRef = useRef<number | null>(null);
+  const silenceStartTimeRef = useRef<number | null>(null);
+  
+  // TTS timing refs
   const openaiAbortControllerRef = useRef<AbortController | null>(null);
-  const stateRef = useRef<VoiceState>('idle');
-  const liveTranscriptionRef = useRef<LiveTranscription | null>(null);
   const isBargingInRef = useRef<boolean>(false);
   const ttsFirstChunkTimeRef = useRef<number | null>(null);
-  const accumulatedTranscriptRef = useRef<string>(''); // For accumulating interim results
-  const fullTextSentToTTSRef = useRef<string>(''); // All text sent to TTS (cumulative)
-  const hasStartedSpeakingRef = useRef<boolean>(false); // Track if we've started displaying text
+  const fullTextSentToTTSRef = useRef<string>('');
+  const hasStartedSpeakingRef = useRef<boolean>(false);
+  
+  // Function ref to break circular dependency
+  const stopRecordingAndTranscribeRef = useRef<(() => Promise<void>) | null>(null);
 
   const log = useCallback((message: string, ...args: any[]) => {
     const context = voiceLogger.getContext();
-    let stage: 'Conversation' | 'TTS' | 'Recording' | 'VAD' | 'Error' = 'Conversation';
-    if (message.includes('TTS') || message.includes('WebSocket')) stage = 'TTS';
-    else if (message.includes('recording') || message.includes('Recording') || message.includes('microphone')) stage = 'Recording';
-    else if (message.includes('Speech') || message.includes('VAD')) stage = 'VAD';
-    else if (message.includes('error') || message.includes('Error') || message.includes('Failed')) stage = 'Error';
+    console.log(`[Voice] ${message}`, ...args);
+    voiceLogger.log('Conversation', message, { ...context, legacy: true });
+  }, []);
+
+  // Transition state with logging
+  const transitionState = useCallback((newState: VoiceState, reason: string) => {
+    const prevState = stateRef.current;
+    if (prevState === newState) return;
     
-    const metadata: any = {};
-    if (args.length > 0 && args.some(arg => arg !== undefined && arg !== null)) {
-      metadata.args = args;
-    }
-    voiceLogger.log(stage, message, { ...context, legacy: true, ...metadata });
+    console.log(`[Voice] State: ${prevState} → ${newState} (${reason})`);
+    stateRef.current = newState;
+    setState(newState);
+    voiceLogger.stateTransition(prevState, newState, reason, voiceLogger.getContext());
   }, []);
 
   /**
-   * Initialize WebSocket TTS manager
+   * Initialize TTS WebSocket
    */
   const initializeTTS = useCallback(async () => {
     if (wsManagerRef.current) {
       return wsManagerRef.current;
     }
 
-    log('Initializing Eleven Labs WebSocket TTS');
+    log('Initializing TTS WebSocket');
 
     const ttsOptions: TTSOptions = {
       voiceId,
@@ -94,52 +131,45 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
 
     wsManager.onAudioChunk((chunk) => {
       if (audioPlayerRef.current && isActiveRef.current && !isBargingInRef.current) {
-        const context = voiceLogger.getContext();
+        // Track first audio chunk for latency logging
         if (ttsFirstChunkTimeRef.current !== null) {
           const timeToFirstAudio = Date.now() - ttsFirstChunkTimeRef.current;
-          voiceLogger.timing('TTS time-to-first-audio', timeToFirstAudio, context);
-          voiceLogger.log('TTS', 'First audio chunk received', context);
+          voiceLogger.timing('TTS time-to-first-audio', timeToFirstAudio, voiceLogger.getContext());
           ttsFirstChunkTimeRef.current = null;
         }
         
-        // CRITICAL FIX: Always update text display when we have text and audio is playing
-        // This ensures text appears in chat as the agent speaks
+        // Transition to speaking on first audio
+        if (stateRef.current === 'thinking') {
+          transitionState('speaking', 'first audio chunk received');
+        }
+        
+        // Update text display synchronized with audio
         if (fullTextSentToTTSRef.current.length > 0) {
           if (!hasStartedSpeakingRef.current) {
-            // First audio chunk - mark as started
             hasStartedSpeakingRef.current = true;
-            console.log('[onAudioChunk] First audio chunk - displaying text:', fullTextSentToTTSRef.current.substring(0, 100));
-            voiceLogger.log('TTS', `Started speaking, displaying text: "${fullTextSentToTTSRef.current.substring(0, 50)}${fullTextSentToTTSRef.current.length > 50 ? '...' : ''}"`, context);
+            console.log('[Voice] Started speaking, syncing text display');
           }
-          // Always call onTextSpoken to update chat display (even if already started)
-          // This ensures text appears and updates as more content streams in
           onTextSpoken?.(fullTextSentToTTSRef.current);
         }
         
         audioPlayerRef.current.queueChunk(chunk.audio);
-      } else {
-        console.log('[onAudioChunk] Skipped - isActive:', isActiveRef.current, 'isBargingIn:', isBargingInRef.current, 'hasPlayer:', !!audioPlayerRef.current);
       }
     });
 
     wsManager.onError((error) => {
-      log('WebSocket error:', error);
-      setState('error');
-      stateRef.current = 'error';
+      log('TTS WebSocket error:', error);
+      transitionState('error', 'TTS error');
       onError?.(error);
     });
 
     wsManager.onConnect(() => {
-      const context = voiceLogger.getContext();
-      voiceLogger.log('TTS', 'WebSocket connected', context);
-      log('WebSocket TTS connected');
+      log('TTS WebSocket connected');
     });
 
     wsManager.onDisconnect(() => {
-      const context = voiceLogger.getContext();
-      voiceLogger.log('TTS', 'WebSocket disconnected', context);
-      log('WebSocket TTS disconnected');
-      if (isActiveRef.current) {
+      log('TTS WebSocket disconnected');
+      // Reconnect if still active
+      if (isActiveRef.current && wsManagerRef.current) {
         setTimeout(() => {
           if (isActiveRef.current && wsManagerRef.current) {
             wsManagerRef.current.connect();
@@ -150,80 +180,54 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
 
     wsManagerRef.current = wsManager;
 
+    // Initialize audio player
     if (!audioPlayerRef.current) {
       try {
         audioPlayerRef.current = new AudioPlayer();
         await audioPlayerRef.current.initialize();
         
-        if (audioPlayerRef.current) {
-          audioPlayerRef.current.onEnded(() => {
-            if (isActiveRef.current && stateRef.current === 'speaking') {
-              log('Audio playback ended, pausing to wait for user response');
-              
-              // CRITICAL FIX: Reset TTS timer for next speech segment to prevent duplicate contexts
-              ttsFirstChunkTimeRef.current = null;
-              
-              // Reset text tracking for next response
-              fullTextSentToTTSRef.current = '';
-              hasStartedSpeakingRef.current = false;
-              
-              // FIX: After agent finishes speaking, pause (idle) instead of immediately listening
-              // This gives user time to process and respond
-              // User can resume/pause button or start speaking (VAD will detect)
-              setState('idle');
-              stateRef.current = 'idle';
-              
-              // Stop live transcription temporarily - will resume when user starts speaking
-              if (liveTranscriptionRef.current) {
-                liveTranscriptionRef.current.stop();
-              }
-            }
-          });
+        audioPlayerRef.current.onEnded(() => {
+          if (isActiveRef.current && stateRef.current === 'speaking') {
+            log('Audio playback ended - returning to listening');
+            
+            // Reset TTS state
+            ttsFirstChunkTimeRef.current = null;
+            fullTextSentToTTSRef.current = '';
+            hasStartedSpeakingRef.current = false;
+            
+            // Return to listening
+            transitionState('listening', 'playback ended');
+            
+            // Resume recording
+            startRecording();
+          }
+        });
 
-          audioPlayerRef.current.onError((error) => {
-            log('Audio player error:', error);
-            onError?.(error);
-          });
-        }
+        audioPlayerRef.current.onError((error) => {
+          log('Audio player error:', error);
+          onError?.(error);
+        });
       } catch (error: any) {
         log('Failed to initialize audio player:', error);
-        audioPlayerRef.current = null;
-        throw new Error(`Audio player initialization failed: ${error.message}`);
-      }
-    } else {
-      // FIX: Only re-initialize if audio context is closed/invalid
-      // Don't re-initialize if already working
-      try {
-        // Check if audio context is still valid
-        const audioContext = (audioPlayerRef.current as any).audioContext;
-        if (!audioContext || audioContext.state === 'closed') {
-          await audioPlayerRef.current.initialize();
-        }
-        // Otherwise, audio player is already initialized and working
-      } catch (error: any) {
-        log('Failed to re-initialize audio player:', error);
-        // Don't throw - audio player might still work
+        throw new Error(`Audio player init failed: ${error.message}`);
       }
     }
 
+    // Initialize text buffer with smaller thresholds for faster speech
     if (!textBufferRef.current) {
       textBufferRef.current = new TextBuffer({
-        minChars: 50,
-        maxChars: 100,
+        minChars: 30,  // Smaller buffer for faster start
+        maxChars: 60,  // Flush sooner
         sentenceBoundaries: true,
       });
 
       textBufferRef.current.onFlush((text) => {
-        if (wsManagerRef.current && isActiveRef.current) {
-          log('Flushing text buffer to TTS:', text.substring(0, 50) + '...');
-          
-          // CRITICAL: Accumulate all text sent to TTS
+        if (wsManagerRef.current && isActiveRef.current && !isBargingInRef.current) {
+          // Accumulate text for synchronized display
           fullTextSentToTTSRef.current += text;
-          console.log('[textBuffer.onFlush] Total text accumulated:', fullTextSentToTTSRef.current.length, 'chars');
+          console.log('[Voice] Flushing to TTS:', text.length, 'chars');
           
-          // CRITICAL FIX: Always try to update display when text is flushed
-          // This ensures text appears even if audio hasn't started yet
-          // The onAudioChunk handler will also update, but this provides immediate feedback
+          // Update display as text is sent (will sync with audio)
           if (fullTextSentToTTSRef.current.length > 0) {
             onTextSpoken?.(fullTextSentToTTSRef.current);
           }
@@ -235,50 +239,75 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
 
     await wsManager.connect();
     return wsManager;
-  }, [voiceId, modelId, onError, log]);
+  }, [voiceId, modelId, onError, onTextSpoken, log, transitionState]);
 
   /**
-   * Start microphone capture
+   * Start microphone and VAD
    */
-  const startMic = useCallback(async (): Promise<MediaStream> => {
+  const startMicrophone = useCallback(async (): Promise<MediaStream> => {
     if (streamRef.current && streamRef.current.active) {
       return streamRef.current;
     }
 
-    log('Starting microphone capture');
+    log('Starting microphone');
+    
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          sampleRate: 16000, // Optimal for speech
         },
       });
       streamRef.current = stream;
-      log('Microphone capture started');
+      
+      // Initialize audio context for VAD
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+      
+      const sourceNode = audioContextRef.current.createMediaStreamSource(stream);
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 2048;
+      analyserRef.current.smoothingTimeConstant = 0.8;
+      sourceNode.connect(analyserRef.current);
+      
+      log('Microphone and VAD initialized');
       return stream;
     } catch (error: any) {
-      log('Microphone capture error:', error);
-      // Provide user-friendly error messages
+      log('Microphone error:', error);
       let errorMessage = 'Failed to access microphone';
-      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        errorMessage = 'Microphone permission denied. Please allow microphone access in your browser settings.';
-      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-        errorMessage = 'No microphone found. Please connect a microphone and try again.';
-      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        errorMessage = 'Microphone is already in use by another application.';
-      } else if (error.message) {
-        errorMessage = `Failed to access microphone: ${error.message}`;
+      if (error.name === 'NotAllowedError') {
+        errorMessage = 'Microphone permission denied. Please allow access in browser settings.';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = 'No microphone found.';
       }
       throw new Error(errorMessage);
     }
   }, [log]);
 
   /**
-   * Stop microphone capture
+   * Stop microphone
    */
-  const stopMic = useCallback(() => {
-    log('Stopping microphone capture');
+  const stopMicrophone = useCallback(() => {
+    log('Stopping microphone');
+    
+    // Stop VAD
+    if (vadFrameIdRef.current) {
+      cancelAnimationFrame(vadFrameIdRef.current);
+      vadFrameIdRef.current = null;
+    }
+    
+    // Close audio context
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    analyserRef.current = null;
+    
+    // Stop media stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -286,92 +315,18 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   }, [log]);
 
   /**
-   * Initialize Live Transcription using SpeechRecognition API
+   * Start recording audio
    */
-  const initializeLiveTranscription = useCallback(() => {
-    if (liveTranscriptionRef.current) {
-      return;
-    }
-
-    const context = voiceLogger.getContext();
-    voiceLogger.log('LiveTranscription', 'Initializing', context);
-
-    // Check if supported
-    if (!LiveTranscription.isSupported()) {
-      voiceLogger.log('LiveTranscription', 'SpeechRecognition API not supported', context);
-      log('SpeechRecognition API not supported in this browser');
-      return;
-    }
-
-    try {
-      liveTranscriptionRef.current = new LiveTranscription({
-        continuous: true,
-        interimResults: true,
-        language: 'en-US',
-        onTranscript: (text, isFinal) => {
-          if (isFinal) {
-            // Final result - this is when user pauses
-            voiceLogger.log('LiveTranscription', `Final transcript: "${text}"`, context);
-            log(`Live transcription (final): "${text}"`);
-            
-            // Accumulate final transcript
-            const accumulated = accumulatedTranscriptRef.current.trim();
-            accumulatedTranscriptRef.current = accumulated ? `${accumulated} ${text}` : text;
-            
-            // Update UI with accumulated transcript
-            setTranscript(accumulatedTranscriptRef.current);
-            setLiveTranscript(''); // Clear interim
-            
-            // CRITICAL FIX: Send transcript immediately when we get a final result
-            // Don't wait for VAD pause detection - the browser already detected the pause
-            if (accumulatedTranscriptRef.current.trim().length > 0 && isActiveRef.current) {
-              const finalTranscript = accumulatedTranscriptRef.current.trim();
-              voiceLogger.log('LiveTranscription', `Auto-sending transcript: "${finalTranscript.substring(0, 50)}${finalTranscript.length > 50 ? '...' : ''}"`, context);
-              
-              // Reset for next utterance
-              accumulatedTranscriptRef.current = '';
-              setTranscript('');
-              setLiveTranscript('');
-              
-              // Update state to thinking
-              const previousState = stateRef.current;
-              setState('thinking');
-              stateRef.current = 'thinking';
-              voiceLogger.stateTransition(previousState, 'thinking', 'transcript received (LiveTranscription final)', context);
-              
-              // Send transcript to parent immediately
-              onTranscriptComplete?.(finalTranscript);
-            }
-          } else {
-            // Interim result - show live transcription
-            voiceLogger.log('LiveTranscription', `Interim transcript: "${text}"`, context);
-            setLiveTranscript(text);
-          }
-        },
-        onError: (error) => {
-          voiceLogger.error('LiveTranscription', error, context);
-          log('Live transcription error:', error);
-        },
-      });
-
-      voiceLogger.log('LiveTranscription', 'Initialized successfully', context);
-    } catch (error: any) {
-      voiceLogger.error('LiveTranscription', error, context);
-      log('Failed to initialize live transcription:', error);
-    }
-  }, [log]);
-
-  /**
-   * Start recording (for backup/final transcription via Eleven Labs)
-   */
-  const startRecording = useCallback(async () => {
+  const startRecording = useCallback(() => {
     if (isRecordingRef.current || !streamRef.current) return;
 
-    const context = voiceLogger.getContext();
-    voiceLogger.log('Recording', 'Starting', context);
-    log('Starting audio recording');
+    log('Starting recording');
     isRecordingRef.current = true;
     recordingChunksRef.current = [];
+    recordingStartTimeRef.current = Date.now();
+    isSpeakingRef.current = false;
+    speechStartTimeRef.current = null;
+    silenceStartTimeRef.current = null;
 
     try {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -380,9 +335,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         ? 'audio/webm'
         : 'audio/mp4';
 
-      const mediaRecorder = new MediaRecorder(streamRef.current, {
-        mimeType,
-      });
+      const mediaRecorder = new MediaRecorder(streamRef.current, { mimeType });
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
@@ -391,262 +344,379 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       };
 
       mediaRecorder.onerror = (event: any) => {
-        log('MediaRecorder error:', event);
+        log('Recording error:', event);
         isRecordingRef.current = false;
-        onError?.(new Error('Recording error occurred'));
+        onError?.(new Error('Recording error'));
       };
 
-      mediaRecorder.start(100);
+      mediaRecorder.start(100); // Collect chunks every 100ms
       mediaRecorderRef.current = mediaRecorder;
-      voiceLogger.log('Recording', 'Started', context);
-      log('Audio recording started');
+      
+      // Start VAD monitoring
+      startVAD();
+      
     } catch (error: any) {
-      log('Recording error:', error);
+      log('Failed to start recording:', error);
       isRecordingRef.current = false;
-      onError?.(new Error(`Failed to start recording: ${error.message}`));
+      onError?.(new Error(`Recording failed: ${error.message}`));
     }
-  }, [onError, log]);
+  }, [log, onError]);
 
   /**
-   * Stop recording and optionally transcribe with Eleven Labs (fallback)
+   * VAD: Monitor audio energy to detect speech
+   * Uses adaptive noise floor to handle varying environments
    */
-  const stopRecordingAndTranscribe = useCallback(async (): Promise<string | null> => {
+  const startVAD = useCallback(() => {
+    if (!analyserRef.current || !audioContextRef.current) {
+      console.error('[VAD] Cannot start - no analyser or audioContext');
+      return;
+    }
+    
+    const analyser = analyserRef.current;
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    const sampleRate = audioContextRef.current.sampleRate;
+    
+    // Speech frequency range (300Hz - 3400Hz)
+    const speechLowBin = Math.floor(300 * analyser.fftSize / sampleRate);
+    const speechHighBin = Math.floor(3400 * analyser.fftSize / sampleRate);
+    
+    let frameCount = 0;
+    let lastLogTime = 0;
+    
+    // Adaptive noise floor - starts high and adapts to environment
+    let noiseFloor = 0.05; // Initial noise floor estimate
+    const noiseFloorAlpha = 0.02; // How fast to adapt (slower = more stable)
+
+    console.log('[VAD] Started monitoring', { 
+      speechLowBin, 
+      speechHighBin, 
+      sampleRate,
+      threshold: VAD_CONFIG.energyThreshold 
+    });
+
+    const checkEnergy = () => {
+      // Always continue the loop while recording
+      if (!isRecordingRef.current) {
+        console.log('[VAD] Stopping - not recording');
+        return;
+      }
+      
+      // Skip processing if not in listening state
+      if (!isActiveRef.current || stateRef.current !== 'listening') {
+        vadFrameIdRef.current = requestAnimationFrame(checkEnergy);
+        return;
+      }
+      
+      analyser.getByteFrequencyData(dataArray);
+      
+      // Calculate energy in speech frequency range only
+      let speechEnergy = 0;
+      let count = 0;
+      for (let i = speechLowBin; i < Math.min(speechHighBin, bufferLength); i++) {
+        const normalized = dataArray[i] / 255;
+        speechEnergy += normalized * normalized;
+        count++;
+      }
+      const speechRms = count > 0 ? Math.sqrt(speechEnergy / count) : 0;
+      
+      const now = Date.now();
+      frameCount++;
+      
+      // Adaptive threshold: noise floor + fixed threshold above it
+      // Only update noise floor during silence (when not speaking)
+      if (!isSpeakingRef.current) {
+        // Slowly adapt noise floor to current environment
+        noiseFloor = noiseFloor * (1 - noiseFloorAlpha) + speechRms * noiseFloorAlpha;
+      }
+      
+      // Speech is detected if energy is significantly above noise floor
+      const dynamicThreshold = Math.max(noiseFloor * 1.8, VAD_CONFIG.energyThreshold);
+      const hasSpeech = speechRms > dynamicThreshold;
+      
+      // Debug logging every 500ms
+      if (VAD_CONFIG.debugLogging && now - lastLogTime > 500) {
+        console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speech=${hasSpeech}, speaking=${isSpeakingRef.current}`);
+        lastLogTime = now;
+      }
+
+      if (hasSpeech) {
+        // Speech detected - reset silence timer
+        silenceStartTimeRef.current = null;
+        
+        if (!isSpeakingRef.current) {
+          if (speechStartTimeRef.current === null) {
+            speechStartTimeRef.current = now;
+            if (VAD_CONFIG.debugLogging) {
+              console.log('[VAD] Potential speech start detected');
+            }
+          } else if (now - speechStartTimeRef.current >= VAD_CONFIG.speechStartMs) {
+            // Confirmed speech start
+            isSpeakingRef.current = true;
+            speechStartTimeRef.current = null;
+            console.log('[VAD] ✓ Speech CONFIRMED - user is speaking');
+          }
+        }
+      } else {
+        // Silence detected
+        speechStartTimeRef.current = null;
+        
+        if (isSpeakingRef.current) {
+          // User was speaking, now silent
+          if (silenceStartTimeRef.current === null) {
+            silenceStartTimeRef.current = now;
+            console.log('[VAD] Silence started after speech - waiting for end...');
+          } else {
+            const silenceDuration = now - silenceStartTimeRef.current;
+            
+            // Log silence progress every 300ms
+            if (VAD_CONFIG.debugLogging && Math.floor(silenceDuration / 300) !== Math.floor((silenceDuration - 16) / 300)) {
+              console.log(`[VAD] Silence: ${silenceDuration}ms / ${VAD_CONFIG.silenceEndMs}ms`);
+            }
+            
+            if (silenceDuration >= VAD_CONFIG.silenceEndMs) {
+              // Silence long enough - process recording
+              console.log('[VAD] ✓ Speech ENDED - processing audio now');
+              isSpeakingRef.current = false;
+              silenceStartTimeRef.current = null;
+              
+              // Stop recording and transcribe
+              if (stopRecordingAndTranscribeRef.current) {
+                stopRecordingAndTranscribeRef.current();
+              }
+              return; // Don't continue VAD loop
+            }
+          }
+        }
+      }
+
+      vadFrameIdRef.current = requestAnimationFrame(checkEnergy);
+    };
+
+    vadFrameIdRef.current = requestAnimationFrame(checkEnergy);
+  }, []);
+
+  /**
+   * Stop recording and transcribe with ElevenLabs STT
+   */
+  const stopRecordingAndTranscribe = useCallback(async () => {
     if (!isRecordingRef.current || !mediaRecorderRef.current) {
-      return null;
+      return;
     }
 
-    log('Stopping audio recording for fallback transcription');
+    log('Stopping recording for transcription');
     isRecordingRef.current = false;
+    
+    // Stop VAD
+    if (vadFrameIdRef.current) {
+      cancelAnimationFrame(vadFrameIdRef.current);
+      vadFrameIdRef.current = null;
+    }
 
-    return new Promise((resolve) => {
+    return new Promise<void>((resolve) => {
       const mediaRecorder = mediaRecorderRef.current!;
 
       mediaRecorder.onstop = async () => {
         try {
+          const recordingDuration = Date.now() - recordingStartTimeRef.current;
+          
+          // Check minimum duration
+          if (recordingDuration < VAD_CONFIG.minRecordingMs) {
+            log('Recording too short, resuming listening');
+            if (isActiveRef.current) {
+              startRecording();
+            }
+            resolve();
+            return;
+          }
+
           const audioBlob = new Blob(recordingChunksRef.current, {
             type: mediaRecorder.mimeType || 'audio/webm',
           });
 
-          if (audioBlob.size === 0) {
-            log('No audio recorded');
-            resolve(null);
+          if (audioBlob.size < 1000) {
+            log('Audio too small, resuming listening');
+            if (isActiveRef.current) {
+              startRecording();
+            }
+            resolve();
             return;
           }
 
-          log(`Audio recorded: ${audioBlob.size} bytes (fallback transcription)`);
+          log(`Recording: ${audioBlob.size} bytes, ${recordingDuration}ms`);
 
-          // Only use Eleven Labs as fallback if browser transcription failed
-          // For now, skip this since we're using live transcription
-          resolve(null);
+          // Transition to thinking state
+          transitionState('thinking', 'transcribing audio');
+
+          // Send to OpenAI Whisper STT (more reliable than ElevenLabs STT)
+          const formData = new FormData();
+          formData.append('audio', audioBlob, 'recording.webm');
+
+          console.log('[Voice] Sending audio for transcription:', audioBlob.size, 'bytes');
+
+          const response = await fetch('/api/stt/whisper', {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+            console.error('[Voice] Transcription failed:', errorData);
+            throw new Error(`Transcription failed: ${errorData.error || response.statusText}`);
+          }
+
+          const data = await response.json();
+          const transcribedText = data.text?.trim();
+
+          if (!transcribedText) {
+            log('Empty transcription, resuming listening');
+            transitionState('listening', 'empty transcription');
+            if (isActiveRef.current) {
+              startRecording();
+            }
+            resolve();
+            return;
+          }
+
+          log(`Transcription: "${transcribedText}"`);
+          setTranscript(transcribedText);
+
+          // Send to parent (will trigger LLM response)
+          onTranscriptComplete?.(transcribedText);
+          
+          resolve();
         } catch (error: any) {
           log('Transcription error:', error);
-          onError?.(error instanceof Error ? error : new Error(String(error)));
-          resolve(null);
+          transitionState('listening', 'transcription error');
+          onError?.(error);
+          if (isActiveRef.current) {
+            startRecording();
+          }
+          resolve();
         }
       };
 
       if (mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
       } else {
-        if (mediaRecorder.onstop) {
-          const event = new Event('stop');
-          mediaRecorder.onstop(event);
-        }
+        mediaRecorder.onstop?.(new Event('stop'));
       }
     });
-  }, [onError, log]);
+  }, [log, onTranscriptComplete, onError, transitionState, startRecording]);
+
+  // Update ref when stopRecordingAndTranscribe changes
+  useEffect(() => {
+    stopRecordingAndTranscribeRef.current = stopRecordingAndTranscribe;
+  }, [stopRecordingAndTranscribe]);
 
   /**
    * Handle barge-in (user interrupts AI speaking)
    */
   const handleBargeIn = useCallback(() => {
-    const context = voiceLogger.getContext();
-    voiceLogger.log('BargeIn', 'Detected', context);
-    
+    log('Barge-in detected');
     isBargingInRef.current = true;
 
-    let ttsStopped = false;
-    if (wsManagerRef.current) {
-      if (wsManagerRef.current.getConnectionStatus()) {
-        wsManagerRef.current.closeCurrentContext();
-        ttsStopped = true;
-        voiceLogger.log('BargeIn', 'TTS WebSocket context closed', context);
-      } else {
-        voiceLogger.log('BargeIn', 'TTS WebSocket not connected, skipping flush', context);
-      }
+    // Stop TTS
+    if (wsManagerRef.current?.getConnectionStatus()) {
+      wsManagerRef.current.closeCurrentContext();
     }
 
-    let audioStopped = false;
-    if (audioPlayerRef.current) {
-      audioPlayerRef.current.stop();
-      audioStopped = true;
-      voiceLogger.log('BargeIn', 'Audio playback stopped', context);
-    }
+    // Stop audio playback
+    audioPlayerRef.current?.stop();
 
-    let bufferCleared = false;
-    if (textBufferRef.current) {
-      textBufferRef.current.clear();
-      bufferCleared = true;
-      voiceLogger.log('BargeIn', 'Text buffer cleared', context);
-    }
+    // Clear text buffer
+    textBufferRef.current?.clear();
 
-    let openaiAborted = false;
-    if (openaiAbortControllerRef.current) {
-      if (!openaiAbortControllerRef.current.signal.aborted) {
-        openaiAbortControllerRef.current.abort();
-        openaiAborted = true;
-        voiceLogger.log('BargeIn', 'OpenAI stream aborted', context);
-      } else {
-        voiceLogger.log('BargeIn', 'OpenAI stream already aborted', context);
-      }
+    // Abort OpenAI stream
+    if (openaiAbortControllerRef.current && !openaiAbortControllerRef.current.signal.aborted) {
+      openaiAbortControllerRef.current.abort();
       openaiAbortControllerRef.current = null;
-    } else {
-      voiceLogger.log('BargeIn', 'No OpenAI abort controller found', context);
     }
 
-    voiceLogger.log('BargeIn', 'Summary', {
-      ...context,
-      ttsStopped,
-      audioStopped,
-      bufferCleared,
-      openaiAborted,
-    });
-
-    const previousState = stateRef.current;
-    setState('listening');
-    stateRef.current = 'listening';
-    voiceLogger.stateTransition(previousState, 'listening', 'barge-in', context);
-
-    // Reset accumulated transcript since we're starting fresh
-    accumulatedTranscriptRef.current = '';
-    setTranscript('');
-    setLiveTranscript('');
-    
-    // CRITICAL FIX: Reset TTS timer on barge-in to prevent duplicate contexts
+    // Reset TTS state
     ttsFirstChunkTimeRef.current = null;
-    
-    // Reset text tracking for synchronized display
     fullTextSentToTTSRef.current = '';
     hasStartedSpeakingRef.current = false;
+
+    // Transition to listening
+    transitionState('listening', 'barge-in');
 
     setTimeout(() => {
       isBargingInRef.current = false;
     }, 100);
 
     onBargeIn?.();
-  }, [onBargeIn]);
+    
+    // Resume recording
+    if (isActiveRef.current) {
+      startRecording();
+    }
+  }, [log, onBargeIn, transitionState, startRecording]);
 
   /**
-   * Prepare TTS context immediately (called when OpenAI starts streaming)
-   * This ensures TTS is ready to speak as soon as first chunk arrives
+   * Prepare TTS context (called when LLM starts streaming)
    */
   const prepareTTS = useCallback(() => {
-    if (!isActiveRef.current || !wsManagerRef.current) {
-      return;
-    }
+    if (!isActiveRef.current || !wsManagerRef.current) return;
 
-    // Create TTS context immediately if not already created
     if (ttsFirstChunkTimeRef.current === null) {
       ttsFirstChunkTimeRef.current = Date.now();
-      const context = voiceLogger.getContext();
-      voiceLogger.log('TTS', 'Preparing TTS context (OpenAI streaming started)', context);
+      log('Preparing TTS context');
       
-      // CRITICAL FIX: Close any existing context before creating a new one to prevent duplicates
+      // Close any existing context
       if (wsManagerRef.current.getConnectionStatus()) {
         wsManagerRef.current.closeCurrentContext();
-        voiceLogger.log('TTS', 'Closed previous context before creating new one', context);
       }
       
-      // Create context immediately so TTS is ready
+      // Create new context
       wsManagerRef.current.createContext();
-      
-      // Transition to thinking state (AI is processing)
-      if (stateRef.current === 'listening') {
-        const previousState = stateRef.current;
-        setState('thinking');
-        stateRef.current = 'thinking';
-        voiceLogger.stateTransition(previousState, 'thinking', 'OpenAI streaming started', context);
-      }
     }
-  }, []);
+  }, [log]);
 
   /**
-   * Stream text to TTS (buffered) - MODIFIED for immediate start
+   * Stream text to TTS
    */
   const streamToTTS = useCallback((text: string) => {
-    if (isBargingInRef.current) {
-      const context = voiceLogger.getContext();
-      voiceLogger.log('TTS', 'Ignoring chunk during barge-in', context);
+    if (isBargingInRef.current || !isActiveRef.current || !textBufferRef.current || !wsManagerRef.current) {
       return;
     }
 
-    if (!isActiveRef.current || !textBufferRef.current || !wsManagerRef.current) {
-      return;
-    }
-
-    // Ensure TTS context is created on first chunk
+    // Ensure TTS is prepared
     if (ttsFirstChunkTimeRef.current === null) {
       prepareTTS();
     }
 
-    // Transition to speaking state when we start receiving content
-    if (stateRef.current !== 'speaking' && stateRef.current !== 'thinking') {
-      const previousState = stateRef.current;
-      setState('speaking');
-      stateRef.current = 'speaking';
-      const context = voiceLogger.getContext();
-      voiceLogger.stateTransition(previousState, 'speaking', 'TTS started', context);
-    } else if (stateRef.current === 'thinking') {
-      // Transition from thinking to speaking when first content arrives
-      const previousState = stateRef.current;
-      setState('speaking');
-      stateRef.current = 'speaking';
-      const context = voiceLogger.getContext();
-      voiceLogger.stateTransition(previousState, 'speaking', 'First TTS content received', context);
+    // Transition to thinking if not already
+    if (stateRef.current === 'listening') {
+      transitionState('thinking', 'TTS content received');
     }
 
-    // Log TTS input for debugging
-    console.log('[TTS] Streaming text chunk:', text.substring(0, 100), `(${text.length} chars)`);
-    
-    // Add to buffer - but if this is the first chunk and buffer is empty,
-    // send immediately to start speaking faster
-    const bufferLength = textBufferRef.current.getLength();
+    // Add to buffer (will auto-flush when ready)
     textBufferRef.current.add(text);
-    
-    // If buffer was empty and we just added text, try to flush immediately
-    // This ensures TTS starts speaking as soon as possible
-    if (bufferLength === 0 && textBufferRef.current.getLength() > 0) {
-      // Check if we can flush immediately (even if below minChars threshold)
-      // This is a special case for the first chunk to reduce latency
-      const currentBuffer = textBufferRef.current.getBuffer();
-      if (currentBuffer.length >= 20) { // Lower threshold for first chunk
-        textBufferRef.current.flush();
-      }
-    }
-  }, [prepareTTS]);
+  }, [prepareTTS, transitionState]);
 
   /**
-   * Flush remaining text buffer to TTS
+   * Flush remaining TTS buffer
    */
   const flushTTS = useCallback(() => {
-    if (textBufferRef.current) {
+    if (textBufferRef.current && wsManagerRef.current) {
       const remaining = textBufferRef.current.forceFlush();
-      if (remaining && wsManagerRef.current) {
+      if (remaining) {
+        fullTextSentToTTSRef.current += remaining;
         wsManagerRef.current.sendText(remaining, true);
       }
     }
   }, []);
 
   /**
-   * Start conversation - KEY FIX: Start live transcription immediately
+   * Start voice conversation
    */
   const startConversation = useCallback(async () => {
     if (isActiveRef.current) {
-      log('Conversation already active');
+      log('Already active');
       return;
     }
 
-    console.log('[Voice Mode] Starting conversation with sessionId:', sessionId);
     log('Starting conversation');
     isActiveRef.current = true;
     setIsActive(true);
@@ -655,93 +725,61 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       // Initialize TTS
       await initializeTTS();
 
-      // Start microphone - this might fail if permission denied
-      await startMic();
+      // Start microphone
+      await startMicrophone();
 
-      // Initialize and start live transcription IMMEDIATELY
-      initializeLiveTranscription();
-      
-      if (liveTranscriptionRef.current) {
-        const context = voiceLogger.getContext();
-        voiceLogger.log('LiveTranscription', 'Starting', context);
-        liveTranscriptionRef.current.start();
-        
-        // Also start recording for backup/fallback
-        await startRecording();
-      }
-
-      // Reset accumulated transcript
-      accumulatedTranscriptRef.current = '';
+      // Reset state
       setTranscript('');
       setLiveTranscript('');
+      isSpeakingRef.current = false;
+      speechStartTimeRef.current = null;
+      silenceStartTimeRef.current = null;
 
-      // Set state to listening
-      setState('listening');
-      stateRef.current = 'listening';
+      // Transition to listening
+      transitionState('listening', 'conversation started');
 
-      log('Conversation started, live transcription active, listening...');
+      // Start recording
+      startRecording();
+
+      log('Conversation started');
     } catch (error: any) {
-      log('Failed to start conversation:', error);
-      // CRITICAL: Reset state before throwing error
+      log('Failed to start:', error);
       isActiveRef.current = false;
       setIsActive(false);
-      setState('error');
-      stateRef.current = 'error';
-      
-      // Cleanup any partially initialized resources
-      if (liveTranscriptionRef.current) {
-        try {
-          liveTranscriptionRef.current.stop();
-          liveTranscriptionRef.current = null;
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-      }
-      if (streamRef.current) {
-        try {
-          streamRef.current.getTracks().forEach(track => track.stop());
-          streamRef.current = null;
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-      }
-      
-      // Call error callback
-      onError?.(error instanceof Error ? error : new Error(String(error)));
-      
-      // Re-throw so UI can catch and display
+      transitionState('error', error.message);
+      onError?.(error);
       throw error;
     }
-  }, [initializeTTS, startMic, initializeLiveTranscription, startRecording, onError, log]);
+  }, [initializeTTS, startMicrophone, startRecording, transitionState, onError, log]);
 
   /**
-   * End conversation
+   * End voice conversation
    */
   const endConversation = useCallback(() => {
-    const context = voiceLogger.getContext();
-    voiceLogger.log('Conversation', 'Ending', context);
+    log('Ending conversation');
     
-    // CRITICAL FIX: Set isActive to false immediately to stop voice mode
     isActiveRef.current = false;
-    setIsActive(false); // Update state so UI reflects voice mode is off
+    setIsActive(false);
     isBargingInRef.current = false;
-
-    // Stop live transcription
-    if (liveTranscriptionRef.current) {
-      liveTranscriptionRef.current.stop();
-      liveTranscriptionRef.current = null;
-    }
 
     // Stop recording
     if (mediaRecorderRef.current && isRecordingRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
       isRecordingRef.current = false;
     }
 
-    // Stop microphone
-    stopMic();
+    // Stop VAD
+    if (vadFrameIdRef.current) {
+      cancelAnimationFrame(vadFrameIdRef.current);
+      vadFrameIdRef.current = null;
+    }
 
-    // Disconnect WebSocket
+    // Stop microphone
+    stopMicrophone();
+
+    // Disconnect TTS
     if (wsManagerRef.current) {
       wsManagerRef.current.disconnect();
       wsManagerRef.current = null;
@@ -760,29 +798,22 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       textBufferRef.current = null;
     }
 
-    // Abort OpenAI if active
+    // Abort OpenAI
     if (openaiAbortControllerRef.current) {
       openaiAbortControllerRef.current.abort();
       openaiAbortControllerRef.current = null;
     }
 
     // Reset state
-    const previousState = stateRef.current;
-    setState('idle');
-    stateRef.current = 'idle';
-    voiceLogger.stateTransition(previousState, 'idle', 'conversation ended', context);
+    transitionState('idle', 'conversation ended');
     setTranscript('');
     setLiveTranscript('');
-    accumulatedTranscriptRef.current = '';
-    
     ttsFirstChunkTimeRef.current = null;
-    
-    // Reset text tracking for synchronized display
     fullTextSentToTTSRef.current = '';
     hasStartedSpeakingRef.current = false;
 
-    voiceLogger.log('Conversation', 'Ended', context);
-  }, [stopMic]);
+    log('Conversation ended');
+  }, [stopMicrophone, transitionState, log]);
 
   /**
    * Pause conversation
@@ -790,30 +821,30 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const pauseConversation = useCallback(() => {
     if (!isActiveRef.current) return;
 
-    log('Pausing conversation');
-
-    // Pause live transcription
-    if (liveTranscriptionRef.current) {
-      liveTranscriptionRef.current.stop();
-    }
-
-    // Pause audio if playing
-    if (audioPlayerRef.current) {
-      audioPlayerRef.current.pause();
-    }
-
-    // Stop microphone
-    stopMic();
+    log('Pausing');
 
     // Stop recording
     if (mediaRecorderRef.current && isRecordingRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
       isRecordingRef.current = false;
     }
 
-    setState('idle');
-    stateRef.current = 'idle';
-  }, [stopMic, log]);
+    // Stop VAD
+    if (vadFrameIdRef.current) {
+      cancelAnimationFrame(vadFrameIdRef.current);
+      vadFrameIdRef.current = null;
+    }
+
+    // Pause audio
+    audioPlayerRef.current?.pause();
+
+    // Stop microphone
+    stopMicrophone();
+
+    transitionState('idle', 'paused');
+  }, [stopMicrophone, transitionState, log]);
 
   /**
    * Resume conversation
@@ -824,55 +855,28 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       return;
     }
 
-    log('Resuming conversation');
+    log('Resuming');
 
     try {
       // Resume audio if paused
-      if (audioPlayerRef.current) {
-        const isPaused = audioPlayerRef.current.getIsPaused();
-        if (isPaused) {
-          await audioPlayerRef.current.resume();
-          if (audioPlayerRef.current.getIsPlaying()) {
-            setState('speaking');
-            stateRef.current = 'speaking';
-            await startMic();
-            // Resume live transcription
-            if (liveTranscriptionRef.current) {
-              liveTranscriptionRef.current.start();
-            }
-            return;
-          }
+      if (audioPlayerRef.current?.getIsPaused()) {
+        await audioPlayerRef.current.resume();
+        if (audioPlayerRef.current.getIsPlaying()) {
+          transitionState('speaking', 'resumed playback');
+          await startMicrophone();
+          return;
         }
       }
 
-      // Otherwise, restart listening with live transcription
-      await startMic();
-      
-      // Restart live transcription
-      if (liveTranscriptionRef.current) {
-        liveTranscriptionRef.current.start();
-      } else {
-        initializeLiveTranscription();
-        // Re-check ref after initialization
-        // TypeScript doesn't know initializeLiveTranscription sets the ref, so we need to check again
-        const transcription = liveTranscriptionRef.current;
-        if (transcription) {
-          (transcription as LiveTranscription).start();
-        }
-      }
-
-      // Restart recording
-      if (!isRecordingRef.current) {
-        await startRecording();
-      }
-
-      setState('listening');
-      stateRef.current = 'listening';
+      // Restart microphone and recording
+      await startMicrophone();
+      transitionState('listening', 'resumed');
+      startRecording();
     } catch (error: any) {
-      log('Failed to resume conversation:', error);
-      onError?.(error instanceof Error ? error : new Error(String(error)));
+      log('Resume failed:', error);
+      onError?.(error);
     }
-  }, [startMic, startConversation, initializeLiveTranscription, startRecording, onError, log]);
+  }, [startConversation, startMicrophone, startRecording, transitionState, onError, log]);
 
   /**
    * Set OpenAI abort controller (for barge-in)
@@ -881,96 +885,22 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     openaiAbortControllerRef.current = controller;
   }, []);
 
-  /**
-   * Detect speech start (VAD callback)
-   */
-  const detectSpeechStart = useCallback(async () => {
-    if (stateRef.current === 'idle' && isActiveRef.current) {
-      // User starts speaking after agent finished - resume listening
-      const context = voiceLogger.getContext();
-      voiceLogger.log('VAD', 'Speech start detected after pause - resuming listening', context);
-      log('Speech start detected after pause - resuming listening');
-      
-      // Resume live transcription
-      if (liveTranscriptionRef.current) {
-        liveTranscriptionRef.current.start();
-      }
-      
-      // Transition to listening state
-      setState('listening');
-      stateRef.current = 'listening';
-    } else if (stateRef.current === 'listening' && isActiveRef.current) {
-      const context = voiceLogger.getContext();
-      voiceLogger.log('VAD', 'Speech start detected (user started speaking)', context);
-      log('Speech start detected (VAD)');
-      // Live transcription is already running, just log the event
-    } else if (stateRef.current === 'speaking' && isActiveRef.current) {
-      const context = voiceLogger.getContext();
-      voiceLogger.log('VAD', 'Speech detected during AI speaking - BARGE-IN', context);
-      log('Speech detected during speaking - BARGE-IN');
+  // These are kept for API compatibility but do nothing in new implementation
+  const detectSpeechStart = useCallback(() => {
+    // VAD handles this internally now
+    if (stateRef.current === 'speaking' && isActiveRef.current) {
       handleBargeIn();
     }
-  }, [handleBargeIn, log]);
+  }, [handleBargeIn]);
 
-  /**
-   * Handle pause during speech - send accumulated transcript
-   */
-  const handlePauseDuringSpeech = useCallback(async () => {
-    const finalTranscript = accumulatedTranscriptRef.current.trim();
-    
-    if (finalTranscript.length > 0 && isActiveRef.current) {
-      const context = voiceLogger.getContext();
-      voiceLogger.log('VAD', `Pause during speech - sending transcript: "${finalTranscript.substring(0, 50)}${finalTranscript.length > 50 ? '...' : ''}"`, context);
-      log(`Auto-send triggered by pause: "${finalTranscript}"`);
-      
-      // Reset for next utterance
-      accumulatedTranscriptRef.current = '';
-      setTranscript('');
-      setLiveTranscript('');
-
-      // Update state to thinking
-      const previousState = stateRef.current;
-      setState('thinking');
-      stateRef.current = 'thinking';
-      voiceLogger.stateTransition(previousState, 'thinking', 'transcript received (pause)', context);
-
-      // Send transcript to parent
-      onTranscriptComplete?.(finalTranscript);
-    } else {
-      log('Pause during speech detected but no transcript to send');
-    }
-  }, [onTranscriptComplete, log]);
-
-  /**
-   * Detect speech end (VAD callback) - longer pause
-   */
   const detectSpeechEnd = useCallback(async () => {
-    if (accumulatedTranscriptRef.current.trim().length > 0 && isActiveRef.current) {
-      const finalTranscript = accumulatedTranscriptRef.current.trim();
-      const context = voiceLogger.getContext();
-      voiceLogger.log('VAD', `Speech end detected - final transcript: "${finalTranscript.substring(0, 50)}${finalTranscript.length > 50 ? '...' : ''}"`, context);
-      
-      // Reset for next utterance
-      accumulatedTranscriptRef.current = '';
-      setTranscript('');
-      setLiveTranscript('');
+    // VAD handles this internally now
+  }, []);
 
-      // Update state to thinking
-      const previousState = stateRef.current;
-      setState('thinking');
-      stateRef.current = 'thinking';
-      voiceLogger.stateTransition(previousState, 'thinking', 'transcript received', context);
+  const handlePauseDuringSpeech = useCallback(async () => {
+    // Not used in new implementation - we wait for complete utterance
+  }, []);
 
-      // Send transcript to parent
-      onTranscriptComplete?.(finalTranscript);
-    } else {
-      voiceLogger.log('VAD', 'Speech end detected but no transcript - continuing to listen', voiceLogger.getContext());
-    }
-  }, [onTranscriptComplete]);
-
-  /**
-   * Get the current media stream (for VAD initialization)
-   */
   const getStreamRef = useCallback((): MediaStream | null => {
     return streamRef.current;
   }, []);
@@ -978,7 +908,9 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      endConversation();
+      if (isActiveRef.current) {
+        endConversation();
+      }
     };
   }, [endConversation]);
 
@@ -986,7 +918,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     state,
     isActive,
     transcript,
-    liveTranscript,
+    liveTranscript, // Always empty now - no live transcription
     startConversation,
     endConversation,
     pauseConversation,
