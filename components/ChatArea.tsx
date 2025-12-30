@@ -10,6 +10,7 @@
  */
 
 import { MessageCircle, Sparkles, Brain, Volume2, FileText } from "lucide-react";
+import { useEffect, useRef } from "react";
 import FileAttachmentCard from "./FileAttachmentCard";
 import ICPConfirmationCard from "./ICPConfirmationCard";
 import { MessageDisplay } from "@/types/chat";
@@ -76,13 +77,23 @@ export default function ChatArea({
   onConfirmSection,
   onEditField,
 }: ChatAreaProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages change or loading state changes
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [messages, isLoading, voiceState, isVoiceActive]);
+
   // Show empty state if no messages and voice is not active
   if (messages.length === 0 && !isVoiceActive) {
     return (
       <div className="flex flex-1 items-center justify-center bg-background p-8">
         <div className="text-center max-w-md">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-            <Sparkles className="h-8 w-8 text-primary" />
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
+            <Sparkles className="h-8 w-8 text-foreground" />
           </div>
           <h3 className="mb-2 text-lg font-semibold">Start a conversation</h3>
           <p className="mb-6 text-sm text-muted-foreground">
@@ -92,15 +103,15 @@ export default function ChatArea({
             <p className="text-xs font-medium text-muted-foreground">Try asking:</p>
             <ul className="space-y-1.5 text-sm text-muted-foreground">
               <li className="flex items-center gap-2">
-                <span className="h-1 w-1 rounded-full bg-primary"></span>
+                <span className="h-1 w-1 rounded-full bg-muted-foreground"></span>
                 What is an Ideal Customer Profile?
               </li>
               <li className="flex items-center gap-2">
-                <span className="h-1 w-1 rounded-full bg-primary"></span>
+                <span className="h-1 w-1 rounded-full bg-muted-foreground"></span>
                 How do I identify my target customers?
               </li>
               <li className="flex items-center gap-2">
-                <span className="h-1 w-1 rounded-full bg-primary"></span>
+                <span className="h-1 w-1 rounded-full bg-muted-foreground"></span>
                 What questions should I ask to build an ICP?
               </li>
             </ul>
@@ -111,112 +122,109 @@ export default function ChatArea({
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-6 overflow-y-auto bg-background p-6 md:p-8">
-      {messages.map((message) => (
-        <div
-          key={message.id}
-          className={`flex w-full animate-in fade-in slide-in-from-bottom-2 ${
-            message.role === "user" ? "justify-end" : "justify-start"
-          }`}
-        >
+    <div ref={chatContainerRef} className="flex flex-1 flex-col gap-4 overflow-y-auto bg-background px-4 py-6">
+      <div className="mx-auto w-full max-w-3xl space-y-4">
+        {messages.map((message) => (
           <div
-            className={`max-w-[85%] md:max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
-            message.role === "user"
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted text-foreground border border-border/50"
-          }`}
+            key={message.id}
+            className={`flex w-full ${
+              message.role === "user" ? "justify-end" : "justify-start"
+            }`}
           >
-            {message.role === "assistant" && (
-              <div className="mb-2 flex items-center gap-2">
-                <MessageCircle className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-xs font-medium text-muted-foreground">AI Assistant</span>
-              </div>
-            )}
-            
-            {/* Show file attachment card for user messages with files */}
-            {message.role === "user" && message.fileAttachment && (
-              <div className="mb-2">
-                <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 p-2">
-                  <FileText className="h-4 w-4 text-primary" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-foreground truncate">
-                      {message.fileAttachment.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {(message.fileAttachment.size / 1024).toFixed(1)} KB
-                    </p>
+            <div
+              className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+              message.role === "user"
+                ? "bg-foreground text-background"
+                : "bg-muted text-foreground"
+            }`}
+            >
+              {message.role === "assistant" && (
+                <div className="mb-2 flex items-center gap-2">
+                  <MessageCircle className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-xs font-medium text-muted-foreground">AI Assistant</span>
+                </div>
+              )}
+              
+              {/* Show file attachment card for user messages with files */}
+              {message.role === "user" && message.fileAttachment && (
+                <div className="mb-2">
+                  <div className="flex items-center gap-2 rounded-lg border border-background/20 bg-background/10 p-2">
+                    <FileText className="h-4 w-4 text-background" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-background truncate">
+                        {message.fileAttachment.name}
+                      </p>
+                      <p className="text-xs text-background/70">
+                        {(message.fileAttachment.size / 1024).toFixed(1)} KB
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-            
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
-            
-            {message.timestamp && (
-              <p className={`mt-2 text-xs ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-                {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </p>
-            )}
-          </div>
-        </div>
-      ))}
-      
-      {/* Voice Mode State Indicators - Simplified (no live transcript) */}
-      {isVoiceActive && (
-        <>
-          {/* Thinking State - AI is processing */}
-          {voiceState === 'thinking' && (
-            <div className="flex w-full justify-start animate-in fade-in">
-              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-amber-500/10 px-4 py-3 border-2 border-amber-500/30">
-                <div className="flex items-center gap-3">
-                  <Brain className="h-4 w-4 text-amber-600 dark:text-amber-500" />
-                  <div className="flex gap-1.5">
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-amber-600 dark:bg-amber-500" style={{ animationDelay: '0ms' }}></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-amber-600 dark:bg-amber-500" style={{ animationDelay: '150ms' }}></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-amber-600 dark:bg-amber-500" style={{ animationDelay: '300ms' }}></div>
-                  </div>
-                  <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Processing your message...</span>
-                </div>
-              </div>
-            </div>
-          )}
-          
-          {/* Speaking State - AI is responding */}
-          {voiceState === 'speaking' && (
-            <div className="flex w-full justify-start animate-in fade-in">
-              <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-emerald-500/10 px-4 py-3 border-2 border-emerald-500/30">
-                <div className="flex items-center gap-3">
-                  <Volume2 className="h-4 w-4 text-emerald-600 dark:text-emerald-500 animate-pulse" />
-                  <div className="flex gap-0.5 items-end">
-                    <div className="h-2 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite]" />
-                    <div className="h-3 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.1s]" />
-                    <div className="h-4 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.2s]" />
-                    <div className="h-3 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.3s]" />
-                    <div className="h-2 w-1 bg-emerald-600 dark:bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.4s]" />
-                  </div>
-                  <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">AI is speaking...</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-      
-      {/* Text mode loading indicator */}
-      {isLoading && !isVoiceActive && (
-        <div className="flex w-full justify-start">
-          <div className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-muted px-4 py-3 border border-border/50">
-            <div className="flex items-center gap-2">
-              <div className="flex gap-1">
-                <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]"></div>
-                <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]"></div>
-                <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground"></div>
-              </div>
-              <span className="text-xs text-muted-foreground">AI is thinking...</span>
+              )}
+              
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+              
+              {message.timestamp && (
+                <p className={`mt-2 text-xs ${message.role === "user" ? "text-background/70" : "text-muted-foreground"}`}>
+                  {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </p>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        ))}
+      
+        {/* Voice Mode State Indicators - Simplified (no live transcript) */}
+        {isVoiceActive && (
+          <>
+            {/* Thinking State - AI is processing */}
+            {voiceState === 'thinking' && (
+              <div className="flex w-full justify-start">
+                <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <Brain className="h-4 w-4 text-muted-foreground" />
+                    <div className="flex gap-1.5">
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground" style={{ animationDelay: '0ms' }}></div>
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground" style={{ animationDelay: '150ms' }}></div>
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                    <span className="text-xs font-medium text-muted-foreground">Processing your message...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Speaking State - AI is responding */}
+            {voiceState === 'speaking' && (
+              <div className="flex w-full justify-start">
+                <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <Volume2 className="h-4 w-4 text-foreground" />
+                    <span className="text-xs font-medium text-foreground">AI is speaking...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        
+        {/* Text mode loading indicator */}
+        {isLoading && !isVoiceActive && (
+          <div className="flex w-full justify-start">
+            <div className="max-w-[85%] rounded-2xl bg-muted px-4 py-3">
+              <div className="flex items-center gap-2">
+                <div className="flex gap-1">
+                  <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]"></div>
+                  <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]"></div>
+                  <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground"></div>
+                </div>
+                <span className="text-xs text-muted-foreground">AI is thinking...</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Scroll anchor */}
+      <div ref={messagesEndRef} />
     </div>
   );
 }

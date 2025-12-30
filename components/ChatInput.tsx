@@ -104,8 +104,8 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
   };
 
   return (
-    <div className="border-t border-border bg-card p-4">
-      <div className="mx-auto max-w-4xl space-y-2">
+    <div className="border-t border-border bg-background p-4">
+      <div className="mx-auto max-w-3xl space-y-3">
         {/* File attachment card */}
         {attachedFile && (
           <FileAttachmentCard
@@ -115,57 +115,50 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
           />
         )}
         
-        <div className="flex items-end gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf,.doc,.docx,.txt,.md"
-            onChange={handleFileChange}
-            className="hidden"
-            aria-label="File input"
-          />
-          <button
-            onClick={handleFileAttach}
-            disabled={disabled}
-            className="rounded-lg p-2 hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            aria-label="Attach file"
-            title="Attach file (PDF, Word, or Text)"
-          >
-            <Paperclip className="h-5 w-5 text-muted-foreground" />
-          </button>
-          <div className="flex-1 rounded-lg border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 transition-shadow">
-            <textarea
-              ref={textareaRef}
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={voiceActive ? "Voice mode active - you can still type or attach files..." : "Type your message... (Press Enter to send, Shift+Enter for new line)"}
-              disabled={disabled}
-              className="w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed"
-              rows={1}
-              style={{ minHeight: "48px", maxHeight: `${maxRows * 24 + 12}px` }}
+        {/* Floating chat input container */}
+        <div className="relative">
+          <div className="flex items-end gap-0 rounded-2xl border border-border bg-background shadow-sm focus-within:border-border focus-within:shadow-md transition-all">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.doc,.docx,.txt,.md"
+              onChange={handleFileChange}
+              className="hidden"
+              aria-label="File input"
             />
+            <button
+              onClick={handleFileAttach}
+              disabled={disabled}
+              className="rounded-l-2xl p-3 hover:bg-muted/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              aria-label="Attach file"
+              title="Attach file (PDF, Word, or Text)"
+            >
+              <Paperclip className="h-5 w-5 text-muted-foreground" />
+            </button>
+            <div className="flex-1 min-w-0">
+              <textarea
+                ref={textareaRef}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={voiceActive ? "Voice mode active..." : "Message..."}
+                disabled={disabled}
+                className="w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                rows={1}
+                style={{ minHeight: "52px", maxHeight: `${maxRows * 24 + 12}px` }}
+              />
+            </div>
+            <button
+              onClick={handleSend}
+              disabled={(!message.trim() && !attachedFile) || disabled}
+              className="rounded-r-2xl bg-foreground p-3 text-background hover:bg-foreground/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              aria-label="Send message"
+            >
+              <Send className="h-5 w-5" />
+            </button>
           </div>
-          <button
-            onClick={handleSend}
-            disabled={(!message.trim() && !attachedFile) || disabled}
-            className="rounded-lg bg-primary p-2 text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            aria-label="Send message"
-          >
-            <Send className="h-5 w-5" />
-          </button>
         </div>
       </div>
-      <p className="mx-auto mt-2 max-w-4xl text-xs text-muted-foreground text-center">
-        {voiceActive ? (
-          <span className="text-primary font-medium">🎤 Voice mode is active - use the voice panel on the right to speak</span>
-        ) : (
-          <>
-            Press <kbd className="px-1.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted rounded border border-border">Enter</kbd> to send,{" "}
-            <kbd className="px-1.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted rounded border border-border">Shift + Enter</kbd> for new line
-          </>
-        )}
-      </p>
     </div>
   );
 }

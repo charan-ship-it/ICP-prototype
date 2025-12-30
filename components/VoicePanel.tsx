@@ -11,7 +11,7 @@
  * No live transcription display - waits for complete utterance
  */
 
-import { Play, Pause, User, Mic, MicOff, AlertCircle, Volume2 } from "lucide-react";
+import { Play, Pause, User, AlertCircle, Volume2, VolumeX } from "lucide-react";
 import { useState } from "react";
 
 interface VoicePanelProps {
@@ -89,22 +89,22 @@ export default function VoicePanel({
 
   const getStateColor = (): string => {
     switch (voiceState) {
-      case 'listening': return 'from-blue-500/20 to-blue-500/5 border-blue-500/30';
-      case 'thinking': return 'from-amber-500/20 to-amber-500/5 border-amber-500/30';
-      case 'speaking': return 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30';
+      case 'listening': return 'from-muted to-muted/50 border-border';
+      case 'thinking': return 'from-muted to-muted/50 border-border';
+      case 'speaking': return 'from-muted to-muted/50 border-border';
       case 'error': return 'from-red-500/20 to-red-500/5 border-red-500/30';
-      default: return 'from-primary/20 to-primary/5 border-primary/20';
+      default: return 'from-muted to-muted/50 border-border';
     }
   };
 
   return (
-    <aside className="w-80 min-w-[320px] max-w-[80vw] border-l border-border bg-card p-4 h-full">
+    <aside className="w-80 min-w-[320px] max-w-[80vw] border-l border-border bg-card p-6 h-full">
       <div className="flex h-full flex-col justify-between">
         {/* Agent Details */}
-        <div className="mb-4 rounded-lg border border-border bg-card p-4 shadow-sm">
+        <div className="mb-6 rounded-lg border border-border bg-card p-4">
           <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
-              <User className="h-5 w-5 text-primary" />
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
+              <User className="h-5 w-5 text-foreground" />
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="mb-1 text-sm font-semibold text-foreground">Agent: Alex</h3>
@@ -116,85 +116,42 @@ export default function VoicePanel({
         </div>
 
         {/* Voice Orb and State */}
-        <div className="flex flex-1 flex-col items-center justify-center gap-6 min-h-0">
+        <div className="flex flex-1 flex-col items-center justify-center gap-8 min-h-0 py-8">
           {/* Main Orb */}
           <div className="relative">
             <div
-              className={`relative h-48 w-48 rounded-full bg-gradient-to-br ${getStateColor()} border-2 flex items-center justify-center transition-all duration-300`}
+              className={`relative h-48 w-48 rounded-full bg-gradient-to-br ${getStateColor()} border flex items-center justify-center transition-all duration-300`}
             >
-              {/* Animated rings for active states */}
-              {voiceState === 'listening' && (
-                <>
-                  <div className="absolute h-48 w-48 rounded-full border-2 border-blue-500/40 animate-ping" />
-                  <div className="absolute h-56 w-56 rounded-full border border-blue-500/20 animate-ping" style={{ animationDelay: '0.5s' }} />
-                  <div className="absolute h-64 w-64 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '1s' }} />
-                </>
-              )}
-              
-              {voiceState === 'thinking' && (
-                <>
-                  <div className="absolute h-48 w-48 rounded-full border-2 border-amber-500/30 animate-pulse" />
-                  <div className="absolute h-52 w-52 rounded-full border border-amber-500/20 animate-pulse" style={{ animationDelay: '0.3s' }} />
-                </>
-              )}
-              
-              {voiceState === 'speaking' && (
-                <>
-                  <div className="absolute h-48 w-48 rounded-full border-2 border-emerald-500/40 animate-pulse" />
-                  <div className="absolute h-56 w-56 rounded-full border border-emerald-500/25 animate-pulse" style={{ animationDelay: '0.2s' }} />
-                  <div className="absolute h-64 w-64 rounded-full border border-emerald-500/15 animate-pulse" style={{ animationDelay: '0.4s' }} />
-                </>
-              )}
 
               {/* Center content */}
               <div className="text-center z-10">
-                <div className="h-24 w-24 rounded-full bg-background/80 backdrop-blur mx-auto flex items-center justify-center shadow-lg">
+                <div className="h-24 w-24 rounded-full bg-background mx-auto flex items-center justify-center">
                   {voiceState === 'listening' && (
-                    <div className="relative">
-                      <Mic className="h-10 w-10 text-blue-500" />
-                      {/* Audio level indicator */}
-                      <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 flex gap-0.5">
-                        <div className="h-2 w-0.5 bg-blue-500 animate-[pulse_0.5s_ease-in-out_infinite]" />
-                        <div className="h-3 w-0.5 bg-blue-500 animate-[pulse_0.5s_ease-in-out_infinite_0.1s]" />
-                        <div className="h-4 w-0.5 bg-blue-500 animate-[pulse_0.5s_ease-in-out_infinite_0.2s]" />
-                        <div className="h-3 w-0.5 bg-blue-500 animate-[pulse_0.5s_ease-in-out_infinite_0.3s]" />
-                        <div className="h-2 w-0.5 bg-blue-500 animate-[pulse_0.5s_ease-in-out_infinite_0.4s]" />
-                      </div>
-                    </div>
+                    <Volume2 className="h-12 w-12 text-foreground/60" />
                   )}
                   
                   {voiceState === 'thinking' && (
                     <div className="flex gap-1.5">
-                      <div className="h-3 w-3 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <div className="h-3 w-3 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <div className="h-3 w-3 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      <div className="h-2.5 w-2.5 rounded-full bg-foreground/40 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="h-2.5 w-2.5 rounded-full bg-foreground/40 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="h-2.5 w-2.5 rounded-full bg-foreground/40 animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                   )}
                   
                   {voiceState === 'speaking' && (
-                    <div className="relative">
-                      <Volume2 className="h-10 w-10 text-emerald-500" />
-                      {/* Speaking animation */}
-                      <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 flex gap-0.5">
-                        <div className="h-2 w-1 bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite]" />
-                        <div className="h-4 w-1 bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.1s]" />
-                        <div className="h-5 w-1 bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.2s]" />
-                        <div className="h-4 w-1 bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.3s]" />
-                        <div className="h-2 w-1 bg-emerald-500 animate-[pulse_0.4s_ease-in-out_infinite_0.4s]" />
-                      </div>
-                    </div>
+                    <Volume2 className="h-12 w-12 text-foreground" />
                   )}
                   
                   {voiceState === 'idle' && !isConversationActive && (
-                    <MicOff className="h-10 w-10 text-muted-foreground" />
+                    <VolumeX className="h-12 w-12 text-muted-foreground" />
                   )}
                   
                   {voiceState === 'idle' && isConversationActive && (
-                    <Mic className="h-10 w-10 text-primary/50" />
+                    <Volume2 className="h-12 w-12 text-foreground/40" />
                   )}
                   
                   {voiceState === 'error' && (
-                    <AlertCircle className="h-10 w-10 text-red-500" />
+                    <AlertCircle className="h-12 w-12 text-red-500" />
                   )}
                 </div>
               </div>
@@ -202,23 +159,20 @@ export default function VoicePanel({
           </div>
 
           {/* State Label */}
-          <div className="text-center">
-            <p className={`text-lg font-medium ${
-              voiceState === 'listening' ? 'text-blue-500' :
-              voiceState === 'thinking' ? 'text-amber-500' :
-              voiceState === 'speaking' ? 'text-emerald-500' :
+          <div className="text-center space-y-1">
+            <p className={`text-base font-medium ${
               voiceState === 'error' ? 'text-red-500' :
-              'text-muted-foreground'
+              'text-foreground'
             }`}>
               {getStateLabel()}
             </p>
             {isConversationActive && voiceState === 'listening' && (
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-xs text-muted-foreground">
                 Speak naturally, I'm listening...
               </p>
             )}
             {isConversationActive && voiceState === 'idle' && (
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-xs text-muted-foreground">
                 Press play to resume
               </p>
             )}
@@ -242,7 +196,7 @@ export default function VoicePanel({
         </div>
 
         {/* Conversation Toggle */}
-        <div className="pt-4 border-t border-border space-y-3">
+        <div className="pt-6 border-t border-border space-y-3">
           {errorMessage && (
             <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/30">
               <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
@@ -251,7 +205,7 @@ export default function VoicePanel({
           )}
           <button
             onClick={handleConversationToggle}
-            className={`w-full rounded-lg px-4 py-3 text-sm font-medium transition-colors shadow-sm ${
+            className={`w-full rounded-lg px-4 py-3 text-sm font-medium transition-colors ${
               isConversationActive
                 ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 : "bg-primary text-primary-foreground hover:bg-primary/90"
@@ -259,12 +213,6 @@ export default function VoicePanel({
           >
             {isConversationActive ? "End Conversation" : "Start Voice Mode"}
           </button>
-          
-          {!isConversationActive && (
-            <p className="text-xs text-center text-muted-foreground">
-              Voice mode works like ChatGPT - speak naturally
-            </p>
-          )}
         </div>
       </div>
     </aside>

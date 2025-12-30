@@ -35,6 +35,7 @@ export default function Home() {
   const handleSendMessageRef = useRef<((content: string) => Promise<void>) | null>(null);
   const conversationChatIdRef = useRef<string | null>(null); // Stable chatId for voice conversation
   const conversationIdRef = useRef<string | null>(null); // Unique ID for this conversation session
+  const lastAIMessageIdRef = useRef<string | null>(null); // Store the last AI message ID from server
 
   // Initialize voice hook (will use handleSendMessageRef)
   const voiceHook = useElevenLabsVoice({
@@ -64,47 +65,51 @@ export default function Home() {
       }
     },
     onTextSpoken: (spokenText) => {
-      // CRITICAL FIX: Only update messages if voice is actually active
-      // This prevents unnecessary updates when voice mode is off
-      if (!voiceHook.isActive) {
-        return; // Don't update if voice not active
+      // CRITICAL: In voice mode, we DON'T show text in chat area while speaking
+      // Like ChatGPT voice mode - the voice IS the response, not text
+      // The message will be added only when voice playback ends via onSpeakingComplete
+      console.log('[onTextSpoken] Text being spoken (not shown yet):', spokenText.length, 'chars');
+    },
+    onSpeakingComplete: (finalText) => {
+      // CRITICAL: Voice finished speaking - NOW add the AI message to chat
+      // This ensures text only appears AFTER voice finishes, like ChatGPT
+      console.log('[onSpeakingComplete] Voice finished, adding message:', finalText.length, 'chars');
+      
+      if (!finalText || !finalText.trim()) {
+        console.log('[onSpeakingComplete] No text to add');
+        return;
       }
       
-      // CRITICAL: Update message display with text that's being spoken
-      // This synchronizes text display with audio playback
-      try {
-        setStreamingAIContent(spokenText);
-        setMessages((prev) => {
-          // Find the most recent assistant message (streaming message)
-          // Search from the end to find the last assistant message
-          let lastAssistantIndex = -1;
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'assistant') {
-              lastAssistantIndex = i;
-              break;
-            }
-          }
-          
-          if (lastAssistantIndex >= 0) {
-            // Update existing assistant message
+      // Always create a NEW message for each AI response
+      // Use the message ID from server if available, otherwise generate a unique one
+      const serverMessageId = lastAIMessageIdRef.current;
+      const messageId = serverMessageId || `voice-response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      setMessages((prev) => {
+        // Only check for duplicates if we have a server message ID
+        // Otherwise, always create a new message
+        if (serverMessageId) {
+          const existingIndex = prev.findIndex(msg => msg.id === serverMessageId);
+          if (existingIndex >= 0) {
+            // Message already exists with this server ID, update it
             const updated = [...prev];
-            updated[lastAssistantIndex] = { ...updated[lastAssistantIndex], content: spokenText };
+            updated[existingIndex] = { ...updated[existingIndex], content: finalText };
             return updated;
           }
-          
-          // If no assistant message exists, create one
-          // This can happen if TTS starts before OpenAI stream creates the message
-          console.log('[onTextSpoken] No assistant message found, creating one with text length:', spokenText.length);
-          return [...prev, {
-            id: `spoken-${Date.now()}`,
-            role: 'assistant' as const,
-            content: spokenText,
-            timestamp: new Date(),
-          }];
-        });
-      } catch (error) {
-        console.error('[onTextSpoken] Error updating message:', error);
-      }
+        }
+        
+        // Create new assistant message - always append to end
+        return [...prev, {
+          id: messageId,
+          role: 'assistant' as const,
+          content: finalText,
+          timestamp: new Date(),
+        }];
+      });
+      
+      // Clear the stored message ID after using it
+      lastAIMessageIdRef.current = null;
+      setStreamingAIContent(''); // Clear streaming content
     },
     onBargeIn: () => {
       console.log('[app/page.tsx] Barge-in detected, aborting OpenAI stream');
@@ -318,6 +323,44 @@ export default function Home() {
     }
   };
 
+  // Delete all chats
+  const handleDeleteAllChats = async () => {
+    if (!sessionId) return;
+
+    // Confirm with user
+    if (!confirm('Are you sure you want to delete all chats? This action cannot be undone.')) {
+      return;
+    }
+
+    // CRITICAL FIX: If voice is active, end it before deleting all chats
+    if (voiceHook.isActive) {
+      console.log('[handleDeleteAllChats] Voice active - ending voice mode before deleting all chats');
+      await voiceHook.endConversation();
+      conversationChatIdRef.current = null;
+      conversationIdRef.current = null;
+    }
+
+    try {
+      const response = await fetch(`/api/chats?session_id=${sessionId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error('Failed to delete all chats');
+
+      // Clear selection and messages
+      setSelectedChatId(undefined);
+      setMessages([]);
+      setIcpData(null);
+      setProgress(0);
+
+      // Reload chats list (will be empty)
+      loadChats(sessionId);
+    } catch (error) {
+      console.error('Error deleting all chats:', error);
+      alert('Failed to delete all chats. Please try again.');
+    }
+  };
+
   const handleSendMessage = useCallback(async (content: string, file?: File) => {
     console.log('[handleSendMessage] Called with:', {
       contentLength: content?.length,
@@ -487,6 +530,8 @@ export default function Home() {
         }),
       });
 
+      let userMessage: any;
+      
       if (!userResponse.ok) {
         let errorData: any = {};
         try {
@@ -499,18 +544,75 @@ export default function Home() {
           console.warn('Error response is not JSON:', e);
         }
         
-        console.error('Failed to save message:', {
-          status: userResponse.status,
-          statusText: userResponse.statusText,
-          errorData,
-          chatId,
-        });
-        
-        const errorMessage = errorData?.error || errorData?.details || errorData?.message || `Failed to save message (${userResponse.status})`;
-        throw new Error(errorMessage);
+        // If chat not found (404), try to create a new chat and retry
+        if (userResponse.status === 404 && errorData?.error === 'Chat not found') {
+          console.log('[handleSendMessage] Chat not found, creating new chat and retrying...');
+          
+          if (!sessionId) {
+            throw new Error('Session ID is required to create a new chat');
+          }
+          
+          // Create a new chat
+          const newChatResponse = await fetch('/api/chats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+          
+          if (!newChatResponse.ok) {
+            throw new Error('Failed to create new chat');
+          }
+          
+          const newChat = await newChatResponse.json();
+          chatId = newChat.id;
+          
+          // Update refs and state
+          conversationChatIdRef.current = chatId;
+          setSelectedChatId(chatId);
+          setMessages([]);
+          
+          // Add new chat to list
+          setChats((prev) => [
+            {
+              id: newChat.id,
+              title: newChat.title,
+              timestamp: newChat.timestamp ? new Date(newChat.timestamp) : undefined,
+            },
+            ...prev,
+          ]);
+          
+          // Retry saving the message with the new chatId
+          const retryResponse = await fetch(`/api/chats/${chatId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              role: 'user', 
+              content: messageContent,
+            }),
+          });
+          
+          if (!retryResponse.ok) {
+            const retryErrorData = await retryResponse.json().catch(() => ({}));
+            throw new Error(retryErrorData?.error || retryErrorData?.details || 'Failed to save message after creating new chat');
+          }
+          
+          userMessage = await retryResponse.json();
+        } else {
+          // For other errors, throw normally
+          console.error('Failed to save message:', {
+            status: userResponse.status,
+            statusText: userResponse.statusText,
+            errorData,
+            chatId,
+          });
+          
+          const errorMessage = errorData?.error || errorData?.details || errorData?.message || `Failed to save message (${userResponse.status})`;
+          throw new Error(errorMessage);
+        }
+      } else {
+        // Normal case: response is OK
+        userMessage = await userResponse.json();
       }
-      
-      const userMessage = await userResponse.json();
       
       // Convert timestamp to Date object
       const userMessageWithDate: MessageDisplay = {
@@ -599,6 +701,9 @@ export default function Home() {
 
     setIsLoading(true);
 
+    // Clear previous AI message ID ref for new message
+    lastAIMessageIdRef.current = null;
+
     // Create abort controller for barge-in support
     const abortController = new AbortController();
     currentAbortControllerRef.current = abortController;
@@ -655,7 +760,12 @@ export default function Home() {
         timestamp: new Date(),
         icpExtraction: icpExtraction,
       };
-      setMessages((prev) => [...prev, streamingMessage]);
+      
+      // CRITICAL: In voice mode, don't add AI message to chat until voice finishes
+      // This prevents text appearing before voice speaks (like ChatGPT)
+      if (!voiceHook.isActive) {
+        setMessages((prev) => [...prev, streamingMessage]);
+      }
       
       // If we have a summary, also update streaming content
       if (initialContent) {
@@ -690,17 +800,24 @@ export default function Home() {
                     ? `${icpExtraction.summary}\n\n${aiResponseContent}`
                     : aiResponseContent;
                   
-                  const finalMessage: MessageDisplay = {
-                    id: data.message.id,
-                    role: data.message.role,
-                    content: finalContent,
-                    timestamp: new Date(data.message.created_at),
-                    icpExtraction: icpExtraction,
-                  };
-                  setMessages((prev) => 
-                    prev.map(msg => msg.id === messageId ? finalMessage : msg)
-                  );
-                  setStreamingAIContent(''); // Clear streaming content when done
+                  // CRITICAL: In voice mode, don't update chat UI here
+                  // The message will be added via onSpeakingComplete when voice finishes
+                  // Store the message ID so onSpeakingComplete can use it
+                  if (voiceHook.isActive) {
+                    lastAIMessageIdRef.current = data.message.id;
+                  } else {
+                    const finalMessage: MessageDisplay = {
+                      id: data.message.id,
+                      role: data.message.role,
+                      content: finalContent,
+                      timestamp: new Date(data.message.created_at),
+                      icpExtraction: icpExtraction,
+                    };
+                    setMessages((prev) => 
+                      prev.map(msg => msg.id === messageId ? finalMessage : msg)
+                    );
+                    setStreamingAIContent(''); // Clear streaming content when done
+                  }
                   
                   // If we have ICP extraction from PDF, show confirmation cards
                   // This will be handled in ChatArea component
@@ -1019,6 +1136,7 @@ export default function Home() {
             onNewChat={handleNewChat}
             onSelectChat={handleSelectChat}
             onDeleteChat={handleDeleteChat}
+            onDeleteAllChats={handleDeleteAllChats}
             selectedChatId={selectedChatId}
           />
         )}

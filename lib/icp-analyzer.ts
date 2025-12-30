@@ -426,9 +426,9 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
 
 /**
  * Check if a section is complete based on filled fields
- * A section is complete if:
- * - At least 2 fields are filled, OR
- * - 1 field is filled with substantial content (50+ characters)
+ * 
+ * Company Basics: Requires ALL 4 fields (company_name, company_size, industry, location)
+ * Other sections: Requires ALL fields in that section
  */
 export function checkSectionComplete(section: typeof ICP_SECTIONS[0], icpData: ICPData): boolean {
   const filledFields = section.fields.filter(field => {
@@ -436,20 +436,14 @@ export function checkSectionComplete(section: typeof ICP_SECTIONS[0], icpData: I
     return value && typeof value === 'string' && value.trim().length > 0;
   });
   
-  // If 2+ fields are filled, section is complete
-  if (filledFields.length >= 2) {
-    return true;
+  // Company Basics requires ALL 4 fields to be complete
+  if (section.name === 'Company Basics') {
+    return filledFields.length === section.fields.length; // Must have all 4 fields
   }
   
-  // If 1 field is filled with substantial content (50+ chars), also consider complete
-  if (filledFields.length === 1) {
-    const fieldValue = icpData[filledFields[0] as keyof ICPData];
-    if (fieldValue && typeof fieldValue === 'string' && fieldValue.trim().length >= 50) {
-      return true;
-    }
-  }
-  
-  return false;
+  // For other sections, require ALL fields as well
+  // This ensures completeness before marking section as done
+  return filledFields.length === section.fields.length;
 }
 
 /**

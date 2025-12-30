@@ -120,3 +120,41 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// DELETE: Delete all chats for a session
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = createServerClient();
+    const searchParams = request.nextUrl.searchParams;
+    const sessionId = searchParams.get('session_id');
+
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: 'session_id is required' },
+        { status: 400 }
+      );
+    }
+
+    // Delete all chats for this session (messages will be cascade deleted)
+    const { error } = await supabase
+      .from('chats')
+      .delete()
+      .eq('session_id', sessionId);
+
+    if (error) {
+      console.error('Error deleting all chats:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete chats' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, message: 'All chats deleted successfully' });
+  } catch (error) {
+    console.error('Unexpected error in delete all chats API:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+

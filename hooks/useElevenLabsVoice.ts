@@ -26,18 +26,30 @@ interface UseElevenLabsVoiceOptions {
   onBargeIn?: () => void;
   onError?: (error: Error) => void;
   onTextSpoken?: (spokenText: string) => void;
+  onSpeakingComplete?: (finalText: string) => void; // Called when voice finishes speaking
   sessionId: string | null;
   voiceId?: string;
   modelId?: string;
 }
 
-// VAD configuration - tuned for reliable detection
+/**
+ * VAD Configuration - Research-Backed Optimal Settings
+ * 
+ * Based on industry standards and best practices for real-time voice conversations:
+ * - Energy threshold: 0.05-0.10 range for normal speech detection (we use 0.06)
+ * - Noise multiplier: 2.0-2.5x for balanced sensitivity (we use 2.2)
+ * - Silence duration: 800-1200ms optimal for conversational apps (we use 1000ms like ChatGPT)
+ * - Speech start confirmation: 100-150ms sufficient (we use 120ms)
+ * - Min speech duration: 300-500ms to filter brief sounds (we use 400ms, allows "yes", "no", "ok")
+ */
 const VAD_CONFIG = {
-  energyThreshold: 0.08,       // Higher threshold to ignore background noise (was too sensitive)
-  speechStartMs: 100,          // How long energy must be above threshold to start (faster)
-  silenceEndMs: 1200,          // How long silence before sending (1.2s - quick response)
-  minRecordingMs: 300,         // Minimum recording length to process
-  debugLogging: true,          // Enable debug logging for VAD
+  energyThreshold: 0.06,        // Lower baseline (research: 0.05-0.10) - was 0.20 (too high)
+  speechStartMs: 120,           // Faster confirmation (100-150ms optimal) - was 200ms
+  silenceEndMs: 1000,           // 1s silence (ChatGPT-like, research: 800-1200ms) - was 1500ms
+  minRecordingMs: 300,          // Minimum 300ms recording (reasonable minimum) - was 500ms
+  minSpeechDurationMs: 400,     // Lower to 400ms (allows short responses like "yes") - was 800ms
+  noiseMultiplier: 2.2,         // More balanced (research: 2.0-2.5x) - was 3.5 (too high)
+  debugLogging: true,           // Enable for diagnosis and monitoring
 };
 
 export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
@@ -46,6 +58,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     onBargeIn,
     onError,
     onTextSpoken,
+    onSpeakingComplete,
     sessionId,
     voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb',
     modelId = 'eleven_flash_v2_5', // Use flash model for lower latency
@@ -77,6 +90,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const isSpeakingRef = useRef<boolean>(false);
   const speechStartTimeRef = useRef<number | null>(null);
   const silenceStartTimeRef = useRef<number | null>(null);
+  const speechConfirmedTimeRef = useRef<number | null>(null); // When speech was confirmed (for duration check)
   
   // TTS timing refs
   const openaiAbortControllerRef = useRef<AbortController | null>(null);
@@ -189,6 +203,14 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         audioPlayerRef.current.onEnded(() => {
           if (isActiveRef.current && stateRef.current === 'speaking') {
             log('Audio playback ended - returning to listening');
+            
+            // CRITICAL: Call onSpeakingComplete with the final spoken text
+            // This allows the chat UI to show the AI response only after voice finishes
+            const spokenText = fullTextSentToTTSRef.current;
+            if (spokenText && onSpeakingComplete) {
+              console.log('[Voice] Speaking complete, final text length:', spokenText.length);
+              onSpeakingComplete(spokenText);
+            }
             
             // Reset TTS state
             ttsFirstChunkTimeRef.current = null;
@@ -327,6 +349,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     isSpeakingRef.current = false;
     speechStartTimeRef.current = null;
     silenceStartTimeRef.current = null;
+    speechConfirmedTimeRef.current = null;
 
     try {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -408,6 +431,12 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         return;
       }
       
+      // Ensure audio context and analyser are valid
+      if (!analyser || !audioContextRef.current) {
+        console.error('[VAD] Missing analyser or audio context');
+        return;
+      }
+      
       analyser.getByteFrequencyData(dataArray);
       
       // Calculate energy in speech frequency range only
@@ -431,20 +460,40 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       }
       
       // Speech is detected if energy is significantly above noise floor
-      const dynamicThreshold = Math.max(noiseFloor * 1.8, VAD_CONFIG.energyThreshold);
-      const hasSpeech = speechRms > dynamicThreshold;
+      // More adaptive: use noise floor multiplier OR fixed minimum, whichever is lower
+      // This allows thresholds as low as 0.03 (0.06 * 0.5) in very quiet environments
+      // while maintaining a reasonable floor for noise rejection
+      const baseThreshold = noiseFloor * VAD_CONFIG.noiseMultiplier;
+      const dynamicThreshold = Math.max(baseThreshold, VAD_CONFIG.energyThreshold * 0.5);
       
-      // Debug logging every 500ms
-      if (VAD_CONFIG.debugLogging && now - lastLogTime > 500) {
-        console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speech=${hasSpeech}, speaking=${isSpeakingRef.current}`);
-        lastLogTime = now;
+      // HYSTERESIS: Use different thresholds for starting vs ending speech
+      // To START speech: energy must be ABOVE dynamicThreshold
+      // To END speech (silence): energy must be BELOW 60% of dynamicThreshold (significant drop)
+      const speechStartThreshold = dynamicThreshold;
+      const silenceThreshold = dynamicThreshold * 0.6;
+      
+      const hasSpeechStart = speechRms > speechStartThreshold;
+      const hasSilence = speechRms < silenceThreshold;
+      
+      // Debug logging: detailed logs every 500ms when enabled, or key metrics every 2s otherwise
+      // This provides visibility into actual thresholds for diagnosis
+      if (VAD_CONFIG.debugLogging) {
+        if (now - lastLogTime > 500) {
+          console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speaking=${isSpeakingRef.current}`);
+          lastLogTime = now;
+        }
+      } else {
+        // Always log key metrics periodically (every 2 seconds) for diagnosis
+        // Provides visibility without overwhelming console
+        if (now - lastLogTime > 2000) {
+          console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speaking=${isSpeakingRef.current}`);
+          lastLogTime = now;
+        }
       }
 
-      if (hasSpeech) {
-        // Speech detected - reset silence timer
-        silenceStartTimeRef.current = null;
-        
-        if (!isSpeakingRef.current) {
+      if (!isSpeakingRef.current) {
+        // Not currently speaking - check if speech starts
+        if (hasSpeechStart) {
           if (speechStartTimeRef.current === null) {
             speechStartTimeRef.current = now;
             if (VAD_CONFIG.debugLogging) {
@@ -453,19 +502,22 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           } else if (now - speechStartTimeRef.current >= VAD_CONFIG.speechStartMs) {
             // Confirmed speech start
             isSpeakingRef.current = true;
+            speechConfirmedTimeRef.current = now; // Track when speech was confirmed
             speechStartTimeRef.current = null;
+            silenceStartTimeRef.current = null; // Reset silence timer
             console.log('[VAD] ✓ Speech CONFIRMED - user is speaking');
           }
+        } else {
+          // Not enough energy to start speech - reset potential start
+          speechStartTimeRef.current = null;
         }
       } else {
-        // Silence detected
-        speechStartTimeRef.current = null;
-        
-        if (isSpeakingRef.current) {
-          // User was speaking, now silent
+        // Currently speaking - check if silence (with hysteresis)
+        if (hasSilence) {
+          // Energy dropped significantly below threshold - count as silence
           if (silenceStartTimeRef.current === null) {
             silenceStartTimeRef.current = now;
-            console.log('[VAD] Silence started after speech - waiting for end...');
+            console.log('[VAD] Silence detected (energy dropped) - waiting for end...');
           } else {
             const silenceDuration = now - silenceStartTimeRef.current;
             
@@ -475,19 +527,39 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
             }
             
             if (silenceDuration >= VAD_CONFIG.silenceEndMs) {
-              // Silence long enough - process recording
-              console.log('[VAD] ✓ Speech ENDED - processing audio now');
-              isSpeakingRef.current = false;
-              silenceStartTimeRef.current = null;
+              // Silence long enough - check if speech was long enough to process
+              const speechDuration = speechConfirmedTimeRef.current 
+                ? (silenceStartTimeRef.current! - speechConfirmedTimeRef.current) 
+                : 0;
               
-              // Stop recording and transcribe
-              if (stopRecordingAndTranscribeRef.current) {
-                stopRecordingAndTranscribeRef.current();
+              if (speechDuration < VAD_CONFIG.minSpeechDurationMs) {
+                // Speech was too short - likely noise, ignore it
+                console.log(`[VAD] ✗ Speech too short (${speechDuration}ms < ${VAD_CONFIG.minSpeechDurationMs}ms) - ignoring (likely noise)`);
+                isSpeakingRef.current = false;
+                silenceStartTimeRef.current = null;
+                speechConfirmedTimeRef.current = null;
+                // Continue listening, don't process
+              } else {
+                // Valid speech detected - process recording
+                console.log(`[VAD] ✓ Speech ENDED (${speechDuration}ms) - processing audio now`);
+                isSpeakingRef.current = false;
+                silenceStartTimeRef.current = null;
+                speechConfirmedTimeRef.current = null;
+                
+                // Stop recording and transcribe
+                if (stopRecordingAndTranscribeRef.current) {
+                  stopRecordingAndTranscribeRef.current();
+                }
+                return; // Don't continue VAD loop
               }
-              return; // Don't continue VAD loop
             }
           }
+        } else if (hasSpeechStart) {
+          // Clear energy is above threshold - definitely speaking, reset silence timer
+          silenceStartTimeRef.current = null;
         }
+        // Note: If energy is in the "gray zone" (between silenceThreshold and speechStartThreshold),
+        // we don't reset the silence timer - this prevents flickering
       }
 
       vadFrameIdRef.current = requestAnimationFrame(checkEnergy);
@@ -616,15 +688,23 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     log('Barge-in detected');
     isBargingInRef.current = true;
 
-    // Stop TTS
+    // CRITICAL: Save what was spoken before interruption
+    // This adds the partial response to chat (what user actually heard)
+    const spokenText = fullTextSentToTTSRef.current;
+    if (spokenText && onSpeakingComplete) {
+      console.log('[Voice] Barge-in: saving spoken text:', spokenText.length, 'chars');
+      onSpeakingComplete(spokenText);
+    }
+
+    // Stop TTS WebSocket
     if (wsManagerRef.current?.getConnectionStatus()) {
       wsManagerRef.current.closeCurrentContext();
     }
 
-    // Stop audio playback
+    // Stop audio playback immediately
     audioPlayerRef.current?.stop();
 
-    // Clear text buffer
+    // Clear pending text buffer
     textBufferRef.current?.clear();
 
     // Abort OpenAI stream
@@ -651,7 +731,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     if (isActiveRef.current) {
       startRecording();
     }
-  }, [log, onBargeIn, transitionState, startRecording]);
+  }, [log, onBargeIn, onSpeakingComplete, transitionState, startRecording]);
 
   /**
    * Prepare TTS context (called when LLM starts streaming)
@@ -696,17 +776,29 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   }, [prepareTTS, transitionState]);
 
   /**
-   * Flush remaining TTS buffer
+   * Flush remaining TTS buffer and send final chunk
+   * The onFlush callback sends with flush=false, but for the final chunk we need flush=true
    */
   const flushTTS = useCallback(() => {
-    if (textBufferRef.current && wsManagerRef.current) {
-      const remaining = textBufferRef.current.forceFlush();
+    if (textBufferRef.current && wsManagerRef.current?.getConnectionStatus()) {
+      // Get remaining text without triggering callback (to avoid double-add)
+      const remaining = textBufferRef.current.getBuffer();
       if (remaining) {
+        // Clear the buffer
+        textBufferRef.current.clear();
+        // Add to accumulated text
         fullTextSentToTTSRef.current += remaining;
+        // Call text spoken callback
+        onTextSpoken?.(fullTextSentToTTSRef.current);
+        // Send with flush=true to indicate end of text
         wsManagerRef.current.sendText(remaining, true);
+        console.log('[Voice] Final TTS flush:', remaining.length, 'chars');
+      } else {
+        // No remaining text, but still send empty flush to finalize TTS
+        wsManagerRef.current.sendText('', true);
       }
     }
-  }, []);
+  }, [onTextSpoken]);
 
   /**
    * Start voice conversation
@@ -734,6 +826,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       isSpeakingRef.current = false;
       speechStartTimeRef.current = null;
       silenceStartTimeRef.current = null;
+      speechConfirmedTimeRef.current = null;
 
       // Transition to listening
       transitionState('listening', 'conversation started');

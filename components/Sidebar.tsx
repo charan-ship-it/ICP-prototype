@@ -1,6 +1,6 @@
 "use client";
 
-import { Pencil, Search, Cloud, ChevronLeft, X, MessageSquare, Trash2 } from "lucide-react";
+import { Pencil, Search, Cloud, ChevronRight, X, MessageSquare, Trash2 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 
 interface Chat {
@@ -18,6 +18,7 @@ interface SidebarProps {
   onNewChat?: () => void;
   onSelectChat?: (chatId: string) => void;
   onDeleteChat?: (chatId: string) => void;
+  onDeleteAllChats?: () => void;
   selectedChatId?: string;
 }
 
@@ -28,6 +29,7 @@ export default function Sidebar({
   onNewChat,
   onSelectChat,
   onDeleteChat,
+  onDeleteAllChats,
   selectedChatId,
 }: SidebarProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -78,28 +80,25 @@ export default function Sidebar({
     <aside className="w-64 min-w-[256px] max-w-[80vw] border-r border-border bg-card">
       <div className="flex h-full flex-col">
         {/* ICP Builder Title + Toggle */}
-        <div className="border-b border-border px-4 py-3">
+        <div className="border-b border-border px-4 py-3.5">
           <div className="flex items-center gap-3">
             <Cloud className="h-5 w-5 text-foreground" />
             <h1 className="text-lg font-semibold">ICP Builder</h1>
             <button
               onClick={toggleSidebar}
-              className="group relative ml-auto rounded-md p-2 hover:bg-accent transition-colors"
-              aria-label="Close sidebar"
+              className="group relative ml-auto rounded-md p-1.5 hover:bg-accent transition-colors"
+              aria-label="Collapse sidebar"
             >
-              <ChevronLeft className="h-5 w-5 text-foreground" />
-              <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-popover px-2 py-1 text-sm opacity-0 shadow-md transition-opacity group-hover:opacity-100 pointer-events-none border border-border z-50">
-                Close sidebar
-              </span>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
             </button>
           </div>
         </div>
 
         <div className="flex h-full flex-col p-4">
-          <div className="mb-4 space-y-2">
+          <div className="mb-6 space-y-2">
             <button
               onClick={onNewChat}
-              className="flex w-full items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              className="flex w-full items-center gap-2 rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
             >
               <Pencil className="h-4 w-4" />
               <span>New chat</span>
@@ -140,8 +139,19 @@ export default function Sidebar({
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Chats</h2>
-            <div className="space-y-1">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Chats</h2>
+              {chats.length > 0 && onDeleteAllChats && (
+                <button
+                  onClick={onDeleteAllChats}
+                  className="text-xs text-destructive hover:text-destructive/80 transition-colors font-medium"
+                  title="Delete all chats"
+                >
+                  Delete All
+                </button>
+              )}
+            </div>
+            <div className="space-y-0.5">
               {filteredChats.length === 0 ? (
                 <div className="rounded-md border border-dashed border-border p-6 text-center">
                   <MessageSquare className="mx-auto mb-2 h-8 w-8 text-muted-foreground/50" />
@@ -166,14 +176,14 @@ export default function Sidebar({
                   >
                     <button
                       onClick={() => onSelectChat?.(chat.id)}
-                      className="w-full px-3 py-2.5 text-left"
+                      className="w-full px-3 py-2.5 text-left rounded-lg"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <p className="text-sm font-medium truncate">{chat.title}</p>
                             {chat.unread && chat.unread > 0 && (
-                              <span className="flex-shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-xs font-medium text-primary-foreground">
+                              <span className="flex-shrink-0 rounded-full bg-foreground px-1.5 py-0.5 text-xs font-medium text-background">
                                 {chat.unread}
                               </span>
                             )}

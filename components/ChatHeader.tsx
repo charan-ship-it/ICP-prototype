@@ -14,7 +14,7 @@ export default function ChatHeader({
   progress = 0,
 }: ChatHeaderProps) {
   return (
-    <div className="border-b border-border bg-card px-4 py-3 h-[60px]">
+    <div className="border-b border-border bg-background px-6 py-4">
       <div className="flex items-center justify-center relative">
         {!isSidebarOpen && toggleSidebar && (
           <button
@@ -23,13 +23,10 @@ export default function ChatHeader({
             aria-label="Open sidebar"
           >
             <Menu className="h-5 w-5 text-foreground" />
-            <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-popover px-2 py-1 text-sm opacity-0 shadow-md transition-opacity group-hover:opacity-100 pointer-events-none border border-border z-50">
-              Open sidebar
-            </span>
           </button>
         )}
-        <div className="w-full max-w-md">
-          <div className="flex items-center justify-between mb-1">
+        <div className="w-full max-w-3xl">
+          <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-muted-foreground">Progress</span>
             <span className="text-xs font-medium text-muted-foreground">{progress}%</span>
           </div>
