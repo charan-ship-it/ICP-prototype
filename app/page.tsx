@@ -36,6 +36,8 @@ export default function Home() {
   const conversationChatIdRef = useRef<string | null>(null); // Stable chatId for voice conversation
   const conversationIdRef = useRef<string | null>(null); // Unique ID for this conversation session
   const lastAIMessageIdRef = useRef<string | null>(null); // Store the last AI message ID from server
+  const currentSummaryRef = useRef<string | null>(null); // Store summary for current message (for voice mode)
+  const currentSummaryMessageIdRef = useRef<string | null>(null); // Store the summary message ID
 
   // Initialize voice hook (will use handleSendMessageRef)
   const voiceHook = useElevenLabsVoice({
@@ -71,44 +73,52 @@ export default function Home() {
       console.log('[onTextSpoken] Text being spoken (not shown yet):', spokenText.length, 'chars');
     },
     onSpeakingComplete: (finalText) => {
-      // CRITICAL: Voice finished speaking - NOW add the AI message to chat
+      // CRITICAL: Voice finished speaking - NOW add/update the AI message to chat
       // This ensures text only appears AFTER voice finishes, like ChatGPT
       console.log('[onSpeakingComplete] Voice finished, adding message:', finalText.length, 'chars');
       
-      if (!finalText || !finalText.trim()) {
+      // Combine summary with AI response if we have a summary
+      const summary = currentSummaryRef.current;
+      const fullContent = summary 
+        ? `${summary}\n\n${finalText}`
+        : finalText;
+      
+      if (!fullContent || !fullContent.trim()) {
         console.log('[onSpeakingComplete] No text to add');
         return;
       }
       
-      // Always create a NEW message for each AI response
       // Use the message ID from server if available, otherwise generate a unique one
       const serverMessageId = lastAIMessageIdRef.current;
       const messageId = serverMessageId || `voice-response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       
       setMessages((prev) => {
-        // Only check for duplicates if we have a server message ID
-        // Otherwise, always create a new message
-        if (serverMessageId) {
-          const existingIndex = prev.findIndex(msg => msg.id === serverMessageId);
-          if (existingIndex >= 0) {
-            // Message already exists with this server ID, update it
-            const updated = [...prev];
-            updated[existingIndex] = { ...updated[existingIndex], content: finalText };
-            return updated;
-          }
+        // Check if a message with this ID already exists (e.g., summary message)
+        const existingIndex = prev.findIndex(msg => msg.id === messageId);
+        if (existingIndex >= 0) {
+          // Message already exists (e.g., summary was shown), update it with full content
+          const updated = [...prev];
+          updated[existingIndex] = { 
+            ...updated[existingIndex], 
+            content: fullContent,
+            timestamp: new Date(),
+          };
+          return updated;
         }
         
         // Create new assistant message - always append to end
         return [...prev, {
           id: messageId,
           role: 'assistant' as const,
-          content: finalText,
+          content: fullContent,
           timestamp: new Date(),
         }];
       });
       
-      // Clear the stored message ID after using it
+      // Clear the stored refs after using them
       lastAIMessageIdRef.current = null;
+      currentSummaryRef.current = null;
+      currentSummaryMessageIdRef.current = null;
       setStreamingAIContent(''); // Clear streaming content
     },
     onBargeIn: () => {
@@ -443,29 +453,50 @@ export default function Home() {
           
           if (!processResponse.ok) {
             const errorData = await processResponse.json().catch(() => ({}));
-            throw new Error(errorData.error || errorData.message || 'Failed to process PDF');
+            const errorMessage = errorData.message || errorData.error || 'Failed to process PDF';
+            const errorDetails = errorData.details ? ` (${errorData.details})` : '';
+            console.error('[PDF Processing] Server error:', errorData);
+            throw new Error(`${errorMessage}${errorDetails}`);
           }
           
           const processData = await processResponse.json();
+          console.log('[PDF Processing] Full response:', {
+            hasSummary: !!processData.summary,
+            hasExtractedFields: !!processData.extractedFields,
+            hasIcpData: !!processData.icpData,
+            filledSections: processData.filledSections,
+          });
+          
           icpExtraction = {
             summary: processData.summary,
             extractedFields: processData.extractedFields,
             filledSections: processData.filledSections,
           };
           
-          // Update ICP data in state
-          if (processData.icpData) {
-            console.log('[PDF Processing] Updated ICP data:', processData.icpData);
+          // Update ICP data in state - show panel if we have ANY extracted data
+          const hasExtractedData = processData.extractedFields && Object.keys(processData.extractedFields).length > 0;
+          
+          if (processData.icpData || hasExtractedData) {
+            // Use icpData if available, otherwise construct from extractedFields
+            const dataToShow = processData.icpData || {
+              chat_id: chatId,
+              ...processData.extractedFields,
+            };
+            
+            console.log('[PDF Processing] Setting pending ICP data:', dataToShow);
             
             // Store as pending data for user to confirm via cards
-            setPendingICPData(processData.icpData);
+            setPendingICPData(dataToShow);
             setShowICPCards(true);
+            console.log('[PDF Processing] showICPCards set to true');
             
             // Also update current ICP data for progress calculation
-            setIcpData(processData.icpData);
-            const newProgress = calculateProgress(processData.icpData);
+            setIcpData(dataToShow);
+            const newProgress = calculateProgress(dataToShow);
             console.log('[PDF Processing] New progress:', newProgress);
             setProgress(newProgress);
+          } else {
+            console.warn('[PDF Processing] No icpData or extractedFields in response!', processData);
           }
           
           // Store extracted text for AI context (don't show to user)
@@ -703,6 +734,8 @@ export default function Home() {
 
     // Clear previous AI message ID ref for new message
     lastAIMessageIdRef.current = null;
+    currentSummaryRef.current = null;
+    currentSummaryMessageIdRef.current = null;
 
     // Create abort controller for barge-in support
     const abortController = new AbortController();
@@ -753,6 +786,16 @@ export default function Home() {
       // Create initial streaming message
       // If we have ICP extraction, start with the summary
       const initialContent = icpExtraction?.summary || '';
+      
+      // Store summary for voice mode
+      if (initialContent && voiceHook.isActive) {
+        currentSummaryRef.current = initialContent;
+        currentSummaryMessageIdRef.current = messageId;
+      } else {
+        currentSummaryRef.current = null;
+        currentSummaryMessageIdRef.current = null;
+      }
+      
       const streamingMessage: MessageDisplay = {
         id: messageId,
         role: 'assistant',
@@ -761,9 +804,13 @@ export default function Home() {
         icpExtraction: icpExtraction,
       };
       
-      // CRITICAL: In voice mode, don't add AI message to chat until voice finishes
-      // This prevents text appearing before voice speaks (like ChatGPT)
-      if (!voiceHook.isActive) {
+      // CRITICAL: Always show the summary immediately, even in voice mode
+      // The summary is important feedback about what was extracted from the PDF
+      if (initialContent) {
+        setMessages((prev) => [...prev, streamingMessage]);
+        setStreamingAIContent(initialContent);
+      } else if (!voiceHook.isActive) {
+        // Only add empty streaming message if not in voice mode
         setMessages((prev) => [...prev, streamingMessage]);
       }
       
@@ -800,11 +847,17 @@ export default function Home() {
                     ? `${icpExtraction.summary}\n\n${aiResponseContent}`
                     : aiResponseContent;
                   
-                  // CRITICAL: In voice mode, don't update chat UI here
-                  // The message will be added via onSpeakingComplete when voice finishes
-                  // Store the message ID so onSpeakingComplete can use it
+                  // CRITICAL: In voice mode, handle summary properly
+                  // If summary was already shown, update that message instead of creating new one
                   if (voiceHook.isActive) {
+                    // Store the server message ID
                     lastAIMessageIdRef.current = data.message.id;
+                    
+                    // If we have a summary that was already shown, use that message ID
+                    // Otherwise, use the server message ID
+                    if (currentSummaryMessageIdRef.current) {
+                      lastAIMessageIdRef.current = currentSummaryMessageIdRef.current;
+                    }
                   } else {
                     const finalMessage: MessageDisplay = {
                       id: data.message.id,
@@ -1276,7 +1329,7 @@ export default function Home() {
           
           <ChatInput 
             onSend={handleSendMessage} 
-            disabled={isLoading || voiceHook.isActive} 
+            disabled={isLoading || (voiceHook.isActive && voiceHook.state !== 'idle')} 
             voiceActive={voiceHook.isActive}
           />
         </div>

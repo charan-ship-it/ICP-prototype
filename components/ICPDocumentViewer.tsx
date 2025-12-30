@@ -25,12 +25,13 @@ export default function ICPDocumentViewer({ document, chatId, onClose }: ICPDocu
       // Create a text file download
       const blob = new Blob([document], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      // Use window.document to avoid conflict with the 'document' prop
+      const a = window.document.createElement('a');
       a.href = url;
       a.download = `ICP-Document-${Date.now()}.txt`;
-      document.body.appendChild(a);
+      window.document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
+      window.document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Error downloading document:', error);

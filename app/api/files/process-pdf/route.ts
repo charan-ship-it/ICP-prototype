@@ -48,9 +48,46 @@ export async function POST(request: NextRequest) {
 
     let extractedText = '';
     try {
-      const pdfParse = (await import('pdf-parse')).default;
+      // Import pdf-parse (v1.1.4 exports a function directly)
+      console.log('[PDF Processing] Loading pdf-parse...');
+      let pdfParse;
+      try {
+        // Try require first (works better for CommonJS in Node.js)
+        try {
+          pdfParse = require('pdf-parse');
+          console.log('[PDF Processing] Loaded via require');
+        } catch (requireError) {
+          // Fallback to dynamic import for ES modules/Turbopack
+          console.log('[PDF Processing] Require failed, trying dynamic import...');
+          const pdfParseModule = await import('pdf-parse');
+          // Handle both CommonJS and ES module exports
+          pdfParse = pdfParseModule.default || pdfParseModule;
+          console.log('[PDF Processing] Loaded via dynamic import');
+        }
+        
+        // Verify it's a function
+        if (typeof pdfParse !== 'function') {
+          console.error('[PDF Processing] pdf-parse is not a function. Type:', typeof pdfParse);
+          console.error('[PDF Processing] pdf-parse value:', pdfParse);
+          throw new Error('pdf-parse module does not export a function');
+        }
+        console.log('[PDF Processing] pdf-parse loaded successfully');
+      } catch (importError: any) {
+        console.error('[PDF Processing] Failed to load pdf-parse:', importError);
+        return NextResponse.json(
+          { 
+            error: 'PDF parsing library not available',
+            message: `Failed to load pdf-parse: ${importError.message || 'Unknown error'}`,
+            details: importError.code || 'IMPORT_ERROR'
+          },
+          { status: 500 }
+        );
+      }
+      
+      console.log('[PDF Processing] Parsing PDF buffer, buffer size:', buffer.length);
       const data = await pdfParse(buffer);
       extractedText = data.text || '';
+      console.log('[PDF Processing] Extracted text length:', extractedText.length);
       
       if (!extractedText || extractedText.trim().length === 0) {
         return NextResponse.json(
@@ -62,16 +99,26 @@ export async function POST(request: NextRequest) {
         );
       }
     } catch (error: any) {
-      if (error.code === 'MODULE_NOT_FOUND' || error.message?.includes('pdf-parse')) {
+      console.error('[PDF Processing] Error during PDF parsing:', error);
+      if (error.code === 'MODULE_NOT_FOUND' || error.message?.includes('pdf-parse') || error.message?.includes('Cannot find module')) {
         return NextResponse.json(
           { 
             error: 'PDF parsing library not installed',
-            message: 'Please install pdf-parse: npm install pdf-parse'
+            message: 'Please install pdf-parse: npm install pdf-parse',
+            details: error.message || 'MODULE_NOT_FOUND'
           },
           { status: 500 }
         );
       }
-      throw error;
+      // Re-throw other errors to be caught by outer try-catch
+      return NextResponse.json(
+        { 
+          error: 'Failed to parse PDF',
+          message: error.message || 'Unknown parsing error',
+          details: error.code || 'PARSE_ERROR'
+        },
+        { status: 500 }
+      );
     }
 
     // Use LLM to extract structured ICP fields (more accurate than regex)
@@ -161,11 +208,36 @@ export async function POST(request: NextRequest) {
     }
 
     // Save to database
-    const { data: savedICP, error: saveError } = await supabase
+    // First try to get existing record
+    const { data: existingRecord } = await supabase
       .from('icp_data')
-      .upsert(completedICP, { onConflict: 'chat_id' })
-      .select('*')
+      .select('id')
+      .eq('chat_id', chatId)
       .single();
+
+    let savedICP;
+    let saveError;
+
+    if (existingRecord) {
+      // Update existing record
+      const { data, error } = await supabase
+        .from('icp_data')
+        .update(completedICP)
+        .eq('chat_id', chatId)
+        .select('*')
+        .single();
+      savedICP = data;
+      saveError = error;
+    } else {
+      // Insert new record
+      const { data, error } = await supabase
+        .from('icp_data')
+        .insert(completedICP)
+        .select('*')
+        .single();
+      savedICP = data;
+      saveError = error;
+    }
 
     if (saveError) {
       console.error('Error saving ICP data:', saveError);
@@ -250,11 +322,14 @@ export async function POST(request: NextRequest) {
       extractedText: extractedText.substring(0, 10000), // Return first 10k chars for AI context
     });
   } catch (error: any) {
-    console.error('Error processing PDF:', error);
+    console.error('[PDF Processing] Unexpected error:', error);
+    console.error('[PDF Processing] Error stack:', error.stack);
     return NextResponse.json(
       { 
         error: 'Failed to process PDF',
-        details: error.message || 'Unknown error'
+        message: error.message || 'Unknown error',
+        details: error.code || 'UNEXPECTED_ERROR',
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
       },
       { status: 500 }
     );

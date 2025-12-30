@@ -142,6 +142,8 @@ Output the complete ICP document now:`;
     }
 
     // Save generated document to ICP data
+    // Note: generated_document column may not exist in all schemas
+    // If it doesn't exist, we'll just return the document without saving
     const { error: updateError } = await supabase
       .from('icp_data')
       .update({ 
@@ -151,7 +153,12 @@ Output the complete ICP document now:`;
       .eq('chat_id', chatId);
 
     if (updateError) {
-      console.error('Error saving generated document:', updateError);
+      // If error is about missing column, that's okay - we'll just return the document
+      if (updateError.code === 'PGRST204' || updateError.message?.includes('generated_document')) {
+        console.log('Note: generated_document column not found in schema. Document will be returned but not saved to database.');
+      } else {
+        console.error('Error saving generated document:', updateError);
+      }
     }
 
     return NextResponse.json({
