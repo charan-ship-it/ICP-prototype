@@ -89,13 +89,13 @@ export class ElevenLabsWebSocketManager {
         };
 
         this.ws.onerror = (error) => {
-          // Silently handle WebSocket errors - onclose will handle reconnection
-          // Most errors are transient network issues that resolve automatically
-          // Only log if we're not already handling reconnection
+          // Don't log every error - most are transient network issues
+          // Only log if we've exhausted reconnection attempts
           if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            // Only propagate error if reconnection has failed completely
+            console.error('[WebSocket] Connection error after max reconnection attempts:', error);
             this.onErrorCallback?.(new Error('WebSocket connection failed'));
           }
+          // Otherwise, silently let onclose handle reconnection
         };
 
         this.ws.onclose = (event) => {

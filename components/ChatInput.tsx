@@ -124,7 +124,7 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
         
         {/* Main input container */}
         <div className="relative">
-          <div className="flex items-end gap-0 rounded-3xl border-2 border-border bg-background shadow-sm focus-within:border-primary/30 focus-within:shadow-md transition-all overflow-hidden">
+          <div className="flex items-center justify-start gap-0 rounded-3xl border-2 border-border bg-background shadow-sm focus-within:border-primary/30 focus-within:shadow-md transition-all overflow-hidden">
             <input
               ref={fileInputRef}
               type="file"
@@ -138,7 +138,8 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
             <button
               onClick={handleFileAttach}
               disabled={disabled}
-              className="p-3 hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center justify-center"
+              className="p-3 hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center justify-start"
+              style={{ height: "44px" }}
               aria-label="Attach file"
               title="Attach file (PDF, Word, or Text)"
             >
@@ -154,9 +155,9 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
                 onKeyDown={handleKeyDown}
                 placeholder={voiceActive ? "Voice mode is active..." : "Message ICP Builder..."}
                 disabled={disabled}
-                className="w-full resize-none bg-transparent px-0 py-3.5 text-[15px] outline-none placeholder:text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed leading-6"
+                className="w-full resize-none bg-transparent px-[10px] py-5 text-[15px] outline-none placeholder:text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed leading-6"
                 rows={1}
-                style={{ minHeight: "56px", maxHeight: `${maxRows * 24 + 32}px` }}
+                style={{ height: "47px", minHeight: "47px", maxHeight: `${maxRows * 24 + 32}px` }}
               />
             </div>
             
@@ -164,7 +165,7 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
             <button
               onClick={handleSend}
               disabled={(!message.trim() && !attachedFile) || disabled}
-              className="p-3 bg-primary text-white hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground transition-all flex-shrink-0 rounded-full flex items-center justify-center m-1.5"
+              className="p-3 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground transition-all flex-shrink-0 rounded-full flex items-center justify-center m-1.5"
               aria-label="Send message"
             >
               <Send className="h-5 w-5" />

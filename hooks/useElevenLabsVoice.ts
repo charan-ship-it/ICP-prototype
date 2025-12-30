@@ -810,11 +810,25 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     }
 
     log('Starting conversation');
+    
+    // CRITICAL: Reset WebSocket state before starting
+    // This ensures clean reconnection if previous connection had issues
+    if (wsManagerRef.current) {
+      try {
+        log('Resetting previous WebSocket connection');
+        wsManagerRef.current.closeCurrentContext();
+        wsManagerRef.current = null;
+      } catch (e) {
+        // Ignore errors when closing - connection might already be closed
+        log('Error closing previous WebSocket (ignored):', e);
+      }
+    }
+    
     isActiveRef.current = true;
     setIsActive(true);
 
     try {
-      // Initialize TTS
+      // Initialize TTS (will create new WebSocket connection)
       await initializeTTS();
 
       // Start microphone

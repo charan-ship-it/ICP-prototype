@@ -390,6 +390,17 @@ export default function Home() {
     let chatId = conversationChatIdRef.current || selectedChatId;
     let isNewChat = false;
     
+    // CRITICAL FIX: If voice mode is starting and we have a selectedChatId, use it
+    // This ensures voice mode uses the existing chat where documents were uploaded
+    if (!chatId && voiceHook.isActive && selectedChatId) {
+      chatId = selectedChatId;
+      conversationChatIdRef.current = selectedChatId || null;
+      voiceLogger.log('ChatId', 'Syncing chatId from selectedChatId for voice mode', { 
+        conversationId: conversationIdRef.current, 
+        chatId 
+      });
+    }
+    
     if (!chatId) {
       if (!sessionId) {
         voiceLogger.error('ChatId', 'No sessionId available', { conversationId: conversationIdRef.current });
@@ -484,6 +495,13 @@ export default function Home() {
             };
             
             console.log('[PDF Processing] Setting pending ICP data:', dataToShow);
+            
+            // CRITICAL: Sync conversationChatIdRef so voice mode uses the same chat
+            // This ensures voice mode has context from the uploaded document
+            if (!voiceHook.isActive && chatId) {
+              conversationChatIdRef.current = chatId;
+              console.log('[PDF Processing] Synced conversationChatIdRef:', chatId);
+            }
             
             // Store as pending data for user to confirm via cards
             setPendingICPData(dataToShow);
@@ -598,7 +616,7 @@ export default function Home() {
           chatId = newChat.id;
           
           // Update refs and state
-          conversationChatIdRef.current = chatId;
+          conversationChatIdRef.current = chatId || null;
           setSelectedChatId(chatId);
           setMessages([]);
           
