@@ -4,89 +4,87 @@
 
 @layer base {
   :root {
-    /* Light mode: off-white background, near-black text, orange accent */
-    --background: 0 0% 99%;
-    --foreground: 0 0% 8%;
+    /* Light mode - Claude inspired: cream background, near-black text, warm orange accent */
+    --background: 32 20% 95%;
+    --foreground: 20 14.3% 4.1%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 8%;
+    --card-foreground: 20 14.3% 4.1%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 8%;
+    --popover-foreground: 20 14.3% 4.1%;
 
-    /* Accent Orange */
-    --primary: 25 95% 53%;
+    /* Claude Orange */
+    --primary: 24 100% 50%;
     --primary-foreground: 0 0% 100%;
 
-    /* Soft gray surfaces */
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 10%;
+    /* Soft neutrals */
+    --secondary: 30 10% 92%;
+    --secondary-foreground: 20 14.3% 4.1%;
 
-    --muted: 0 0% 95%;
-    --muted-foreground: 0 0% 42%;
+    --muted: 32 15% 88%;
+    --muted-foreground: 25 5.3% 44.7%;
 
-    --accent: 25 95% 53%;
+    --accent: 24 100% 50%;
     --accent-foreground: 0 0% 100%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 100%;
 
-    /* Borders and input: subtly different */
-    --border: 0 0% 88%;
-    --input: 0 0% 85%;
+    /* Subtle borders */
+    --border: 20 5.9% 90%;
+    --input: 20 5.9% 90%;
 
-    /* Ring should be orange but not overpowering */
-    --ring: 25 95% 53%;
+    --ring: 24 100% 50%;
 
-    --radius: 0.75rem;
+    --radius: 0.5rem;
 
-    /* Optional chart colors */
-    --chart-1: 25 95% 53%;
-    --chart-2: 25 85% 45%;
-    --chart-3: 25 75% 40%;
-    --chart-4: 25 90% 60%;
-    --chart-5: 25 80% 50%;
+    /* Chart colors with orange theme */
+    --chart-1: 24 100% 50%;
+    --chart-2: 24 90% 45%;
+    --chart-3: 24 80% 40%;
+    --chart-4: 24 95% 55%;
+    --chart-5: 24 85% 48%;
   }
 
   .dark {
-    /* Dark mode: near-black background, soft white text, orange accent */
-    --background: 0 0% 6%;
-    --foreground: 0 0% 96%;
+    /* Dark mode - Claude inspired: true black background, cream white text, orange accent */
+    --background: 20 14.3% 4.1%;
+    --foreground: 32 20% 95%;
 
-    --card: 0 0% 10%;
-    --card-foreground: 0 0% 96%;
+    --card: 24 9.8% 10%;
+    --card-foreground: 32 20% 95%;
 
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 96%;
+    --popover: 24 9.8% 10%;
+    --popover-foreground: 32 20% 95%;
 
-    /* Accent Orange */
-    --primary: 25 95% 53%;
+    /* Claude Orange */
+    --primary: 24 100% 50%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 0 0% 14%;
-    --secondary-foreground: 0 0% 96%;
+    --secondary: 24 9.8% 10%;
+    --secondary-foreground: 32 20% 95%;
 
-    --muted: 0 0% 14%;
-    --muted-foreground: 0 0% 65%;
+    --muted: 12 6.5% 15.1%;
+    --muted-foreground: 24 5.4% 63.9%;
 
-    --accent: 25 95% 53%;
+    --accent: 24 100% 50%;
     --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 62.8% 50%;
+    --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 0 0% 18%;
-    --input: 0 0% 20%;
+    --border: 12 6.5% 15.1%;
+    --input: 12 6.5% 15.1%;
 
-    --ring: 25 95% 53%;
+    --ring: 24 100% 50%;
 
-    --radius: 0.75rem;
-
-    --chart-1: 25 95% 53%;
-    --chart-2: 25 85% 45%;
-    --chart-3: 25 75% 40%;
-    --chart-4: 25 90% 60%;
-    --chart-5: 25 80% 50%;
+    /* Chart colors */
+    --chart-1: 24 100% 50%;
+    --chart-2: 24 90% 45%;
+    --chart-3: 24 80% 40%;
+    --chart-4: 24 95% 55%;
+    --chart-5: 24 85% 48%;
   }
 }
 
@@ -98,6 +96,26 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  
+  /* Improved scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 4px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
   }
 }
 
@@ -115,5 +133,21 @@
 
   .animate-pulse-ring {
     animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  /* Smooth fade-in animation */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out;
   }
 }

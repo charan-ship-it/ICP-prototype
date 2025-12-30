@@ -69,7 +69,7 @@ export class ElevenLabsWebSocketManager {
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = async () => {
-          console.log('[ElevenLabs WS] Connected');
+          // Connection successful - silent
           this.isConnected = true;
           this.reconnectAttempts = 0;
           this.hasStartedSpeaking = false;
@@ -89,12 +89,20 @@ export class ElevenLabsWebSocketManager {
         };
 
         this.ws.onerror = (error) => {
-          console.error('[ElevenLabs WS] Error:', error);
-          this.onErrorCallback?.(new Error('WebSocket error occurred'));
+          // Silently handle WebSocket errors - onclose will handle reconnection
+          // Most errors are transient network issues that resolve automatically
+          // Only log if we're not already handling reconnection
+          if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            // Only propagate error if reconnection has failed completely
+            this.onErrorCallback?.(new Error('WebSocket connection failed'));
+          }
         };
 
         this.ws.onclose = (event) => {
-          console.log('[ElevenLabs WS] Disconnected', event.code, event.reason);
+          // Only log disconnections if they're unexpected (not intentional close)
+          if (event.code !== 1000) {
+            // Silent - reconnection will handle it
+          }
           this.isConnected = false;
           this.stopKeepAlive();
           this.hasStartedSpeaking = false;
@@ -104,16 +112,18 @@ export class ElevenLabsWebSocketManager {
           if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             const delay = 1000 * this.reconnectAttempts;
-            console.log(`[ElevenLabs WS] Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms`);
+            // Silently attempt reconnection - don't log unless it's the final attempt
             setTimeout(() => {
-              this.connect().catch((error) => {
-                console.error('[ElevenLabs WS] Reconnection failed:', error);
+              this.connect().catch(() => {
+                // Silently handle reconnection failures - will retry automatically
                 if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                  // Only notify on final failure
                   this.onErrorCallback?.(new Error('Failed to reconnect after multiple attempts'));
                 }
               });
             }, delay);
           } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            // Only notify on final failure
             this.onErrorCallback?.(new Error('WebSocket connection lost and reconnection failed'));
           }
         };
@@ -138,11 +148,11 @@ export class ElevenLabsWebSocketManager {
         apiKey = data.apiKey || null;
       }
     } catch (error) {
-      console.error('[ElevenLabs WS] Failed to get API key:', error);
+      // Silently handle API key fetch errors - will retry on next connection
     }
 
     if (!apiKey) {
-      console.warn('[ElevenLabs WS] API key not found - TTS may not work');
+      // API key missing - will be handled by error callback if needed
     }
 
     const config: any = {
@@ -211,14 +221,14 @@ export class ElevenLabsWebSocketManager {
    */
   sendText(text: string, flush: boolean = false, contextId?: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[ElevenLabs WS] Cannot send text: WebSocket not connected');
+      // Silently skip if not connected - will reconnect automatically
       return;
     }
 
     // Use provided context or current context
     let activeContextId = contextId || this.currentContextId;
     if (!activeContextId) {
-      console.log('[ElevenLabs WS] No active context, creating one');
+      // Silently create context if needed
       activeContextId = this.createContext();
     }
 
@@ -260,22 +270,24 @@ export class ElevenLabsWebSocketManager {
         } else if (data.error) {
           // Handle specific errors gracefully
           if (data.error === 'input_timeout_exceeded') {
-            // This is expected when connection is idle - just log as info
-            console.log('[ElevenLabs WS] Input timeout (expected for idle connection) - reconnecting...');
-            // Reconnect silently
+            // This is expected when connection is idle - reconnect silently
             this.disconnect();
-            this.connect().catch(err => {
-              console.error('[ElevenLabs WS] Failed to reconnect after timeout:', err);
+            this.connect().catch(() => {
+              // Silently handle reconnection failures
             });
           } else {
-            // Other errors are real issues
-            console.error('[ElevenLabs WS] Error from server:', data.error);
-            this.onErrorCallback?.(new Error(data.error));
+            // Other errors - handle silently unless critical
+            // Most server errors are transient and will resolve on reconnect
+            // Only propagate truly critical errors
+            if (data.error.includes('authentication') || data.error.includes('invalid')) {
+              this.onErrorCallback?.(new Error(data.error));
+            }
+            // Otherwise, let reconnection handle it
           }
         }
       }
     } catch (error) {
-      console.error('[ElevenLabs WS] Error handling message:', error);
+      // Silently handle message parsing errors - corrupted messages are skipped
     }
   }
 

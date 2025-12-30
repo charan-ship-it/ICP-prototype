@@ -1,8 +1,7 @@
 "use client";
 
-import { Send, Paperclip } from "lucide-react";
+import { Send, Paperclip, X, FileText } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
-import FileAttachmentCard from "./FileAttachmentCard";
 
 interface ChatInputProps {
   onSend?: (message: string, file?: File) => void;
@@ -22,9 +21,9 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
     if (textarea) {
       textarea.style.height = "auto";
       const scrollHeight = textarea.scrollHeight;
-      const lineHeight = 24; // Approximate line height
+      const lineHeight = 24;
       const rows = Math.min(Math.floor(scrollHeight / lineHeight), maxRows);
-      textarea.style.height = `${rows * lineHeight + 12}px`;
+      textarea.style.height = `${rows * lineHeight + 16}px`;
     }
   };
 
@@ -34,10 +33,7 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
 
   const handleSend = () => {
     if ((message.trim() || attachedFile) && !disabled) {
-      // Send message with attached file if present
       onSend?.(message.trim() || '[File attachment]', attachedFile || undefined);
-      
-      // Clear message and file
       setMessage("");
       setAttachedFile(null);
       
@@ -61,17 +57,14 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Check file size (max 10MB)
       if (file.size > 10 * 1024 * 1024) {
         alert('File size must be less than 10MB');
-        // Reset file input
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
         return;
       }
       
-      // Check file type (allow common document types)
       const allowedTypes = [
         'application/pdf',
         'application/msword',
@@ -82,17 +75,14 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
       
       if (!allowedTypes.includes(file.type)) {
         alert('Please upload a PDF, Word document, or text file');
-        // Reset file input
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
         return;
       }
       
-      // Store file in state - don't extract content yet
       setAttachedFile(file);
       
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -104,20 +94,37 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
   };
 
   return (
-    <div className="border-t border-border bg-background p-4">
-      <div className="mx-auto max-w-3xl space-y-3">
-        {/* File attachment card */}
+    <div className="bg-background">
+      <div className="px-4 py-4 mx-auto max-w-3xl" style={{ boxSizing: 'content-box' }}>
+        {/* File attachment preview */}
         {attachedFile && (
-          <FileAttachmentCard
-            file={attachedFile}
-            onRemove={handleRemoveFile}
-            status="pending"
-          />
+          <div className="mb-3 animate-fade-in">
+            <div className="flex items-center gap-3 rounded-xl border border-border bg-muted/30 px-4 py-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                <FileText className="h-5 w-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">
+                  {attachedFile.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {(attachedFile.size / 1024).toFixed(1)} KB
+                </p>
+              </div>
+              <button
+                onClick={handleRemoveFile}
+                className="flex-shrink-0 rounded-lg p-1.5 hover:bg-muted transition-colors"
+                aria-label="Remove file"
+              >
+                <X className="h-4 w-4 text-muted-foreground" />
+              </button>
+            </div>
+          </div>
         )}
         
-        {/* Floating chat input container */}
+        {/* Main input container */}
         <div className="relative">
-          <div className="flex items-end gap-0 rounded-2xl border border-border bg-background shadow-sm focus-within:border-border focus-within:shadow-md transition-all">
+          <div className="flex items-end gap-0 rounded-3xl border-2 border-border bg-background shadow-sm focus-within:border-primary/30 focus-within:shadow-md transition-all overflow-hidden">
             <input
               ref={fileInputRef}
               type="file"
@@ -126,40 +133,50 @@ export default function ChatInput({ onSend, disabled = false, voiceActive = fals
               className="hidden"
               aria-label="File input"
             />
+            
+            {/* Attach button */}
             <button
               onClick={handleFileAttach}
               disabled={disabled}
-              className="rounded-l-2xl p-3 hover:bg-muted/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="p-3 hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center justify-center"
               aria-label="Attach file"
               title="Attach file (PDF, Word, or Text)"
             >
               <Paperclip className="h-5 w-5 text-muted-foreground" />
             </button>
-            <div className="flex-1 min-w-0">
+            
+            {/* Text input */}
+            <div className="flex-1 min-w-0 flex items-center">
               <textarea
                 ref={textareaRef}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={voiceActive ? "Voice mode active..." : "Message..."}
+                placeholder={voiceActive ? "Voice mode is active..." : "Message ICP Builder..."}
                 disabled={disabled}
-                className="w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full resize-none bg-transparent px-0 py-3.5 text-[15px] outline-none placeholder:text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed leading-6"
                 rows={1}
-                style={{ minHeight: "52px", maxHeight: `${maxRows * 24 + 12}px` }}
+                style={{ minHeight: "56px", maxHeight: `${maxRows * 24 + 32}px` }}
               />
             </div>
+            
+            {/* Send button */}
             <button
               onClick={handleSend}
               disabled={(!message.trim() && !attachedFile) || disabled}
-              className="rounded-r-2xl bg-foreground p-3 text-background hover:bg-foreground/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="p-3 bg-primary text-white hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground transition-all flex-shrink-0 rounded-full flex items-center justify-center m-1.5"
               aria-label="Send message"
             >
               <Send className="h-5 w-5" />
             </button>
           </div>
         </div>
+        
+        {/* Helper text */}
+        <p className="mt-2 text-xs text-muted-foreground text-center">
+          Press Enter to send, Shift + Enter for new line
+        </p>
       </div>
     </div>
   );
 }
-

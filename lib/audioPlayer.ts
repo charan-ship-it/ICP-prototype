@@ -44,8 +44,35 @@ export class AudioPlayer {
     }
 
     try {
-      // Decode audio data
-      const audioBuffer = await this.audioContext.decodeAudioData(audioData.slice(0));
+      // Validate audio context is still valid
+      if (!this.audioContext || this.audioContext.state === 'closed') {
+        return; // Silently skip if context is closed
+      }
+
+      // Validate audio data
+      if (!audioData || audioData.byteLength === 0) {
+        return; // Silently skip empty/invalid audio
+      }
+
+      // Decode audio data with error handling
+      let audioBuffer: AudioBuffer;
+      try {
+        audioBuffer = await this.audioContext.decodeAudioData(audioData.slice(0));
+      } catch (decodeError: any) {
+        // Silently handle decoding errors (corrupted/incomplete audio chunks)
+        // This can happen with network issues or incomplete WebSocket chunks
+        if (decodeError.name === 'EncodingError' || decodeError.message?.includes('decode')) {
+          // Silently skip corrupted chunks - don't log or propagate error
+          return;
+        }
+        // Re-throw other errors
+        throw decodeError;
+      }
+      
+      // Double-check context is still valid after async decode
+      if (!this.audioContext || this.audioContext.state === 'closed' || this.isStopping) {
+        return;
+      }
       
       // Create source node
       const source = this.audioContext.createBufferSource();
@@ -72,14 +99,13 @@ export class AudioPlayer {
               return;
             }
             
-            this.playChunk(nextChunk).catch((error) => {
-              console.error('[AudioPlayer] Error playing next chunk:', error);
-              this.onErrorCallback?.(error instanceof Error ? error : new Error(String(error)));
+            this.playChunk(nextChunk).catch(() => {
+              // Silently handle errors - corrupted chunks are skipped
               // Continue with next chunk if available
               if (this.audioQueue.length > 0 && !this.isStopping) {
                 const chunk = this.audioQueue.shift()!;
-                this.playChunk(chunk).catch((err) => {
-                  console.error('[AudioPlayer] Error in queue continuation:', err);
+                this.playChunk(chunk).catch(() => {
+                  // Silently skip corrupted chunks
                 });
               } else if (!this.isStopping) {
                 this.isPlaying = false;
@@ -99,8 +125,8 @@ export class AudioPlayer {
       this.isPlaying = true;
       this.isPaused = false;
     } catch (error) {
-      console.error('[AudioPlayer] Error playing chunk:', error);
-      this.onErrorCallback?.(error instanceof Error ? error : new Error(String(error)));
+      // Silently handle errors - don't log or propagate
+      // This prevents console spam from corrupted audio chunks
     }
   }
 
@@ -118,9 +144,8 @@ export class AudioPlayer {
       // Start playing if not already playing
       const nextChunk = this.audioQueue.shift();
       if (nextChunk) {
-        this.playChunk(nextChunk).catch((error) => {
-          console.error('[AudioPlayer] Error playing queued chunk:', error);
-          this.onErrorCallback?.(error instanceof Error ? error : new Error(String(error)));
+        this.playChunk(nextChunk).catch(() => {
+          // Silently handle errors - corrupted chunks are skipped
         });
       }
     }

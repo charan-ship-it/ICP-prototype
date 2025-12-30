@@ -1,17 +1,11 @@
 "use client";
 
 /**
- * VoicePanel - ChatGPT-like Voice Mode UI
- * 
- * Shows simple state indicators:
- * - Listening: Animated orb, no transcript shown (like ChatGPT)
- * - Thinking: Processing indicator
- * - Speaking: Audio visualization
- * 
- * No live transcription display - waits for complete utterance
+ * VoicePanel - Claude-inspired Voice Mode UI
+ * Clean, minimal design with smooth animations
  */
 
-import { Play, Pause, User, AlertCircle, Volume2, VolumeX } from "lucide-react";
+import { Play, Pause, Mic, AlertCircle, Volume2, VolumeX, Radio } from "lucide-react";
 import { useState } from "react";
 
 interface VoicePanelProps {
@@ -21,7 +15,7 @@ interface VoicePanelProps {
   voiceState: 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
   isConversationActive: boolean;
   transcript: string;
-  liveTranscript?: string; // Kept for API compatibility, not displayed
+  liveTranscript?: string;
   startConversation: () => Promise<void>;
   endConversation: () => Promise<void>;
   pauseConversation: () => void;
@@ -79,110 +73,127 @@ export default function VoicePanel({
 
   const getStateLabel = (): string => {
     switch (voiceState) {
-      case 'listening': return 'Listening...';
-      case 'thinking': return 'Processing...';
-      case 'speaking': return 'Speaking...';
+      case 'listening': return 'Listening';
+      case 'thinking': return 'Processing';
+      case 'speaking': return 'Speaking';
       case 'error': return 'Error';
-      default: return isConversationActive ? 'Paused' : 'Ready';
+      default: return isConversationActive ? 'Paused' : 'Voice Mode';
     }
   };
 
-  const getStateColor = (): string => {
+  const getStateDescription = (): string => {
     switch (voiceState) {
-      case 'listening': return 'from-muted to-muted/50 border-border';
-      case 'thinking': return 'from-muted to-muted/50 border-border';
-      case 'speaking': return 'from-muted to-muted/50 border-border';
-      case 'error': return 'from-red-500/20 to-red-500/5 border-red-500/30';
-      default: return 'from-muted to-muted/50 border-border';
+      case 'listening': return 'Speak naturally, I\'m listening';
+      case 'thinking': return 'Processing your message';
+      case 'speaking': return 'AI is responding';
+      case 'error': return 'Something went wrong';
+      default: return isConversationActive ? 'Click play to resume' : 'Start a voice conversation';
     }
   };
 
   return (
-    <aside className="w-80 min-w-[320px] max-w-[80vw] border-l border-border bg-card p-6 h-full">
-      <div className="flex h-full flex-col justify-between">
-        {/* Agent Details */}
-        <div className="mb-6 rounded-lg border border-border bg-card p-4">
-          <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
-              <User className="h-5 w-5 text-foreground" />
+    <aside className="w-80 min-w-[320px] max-w-[80vw] border-l border-border bg-background">
+      <div className="flex h-full flex-col p-6" style={{ height: '730px' }}>
+        {/* Header */}
+        <div className="mb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5">
+              <Radio className="h-5 w-5 text-primary" />
             </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="mb-1 text-sm font-semibold text-foreground">Agent: Alex</h3>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                Voice mode - speak naturally, I'll listen and respond
-              </p>
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Voice Assistant</h3>
+              <p className="text-xs text-muted-foreground">Natural conversation mode</p>
             </div>
           </div>
         </div>
 
-        {/* Voice Orb and State */}
-        <div className="flex flex-1 flex-col items-center justify-center gap-8 min-h-0 py-8">
-          {/* Main Orb */}
+        {/* Voice Orb */}
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 min-h-0">
+          {/* Main Orb Container */}
           <div className="relative">
+            {/* Animated rings for active states */}
+            {(voiceState === 'listening' || voiceState === 'speaking') && (
+              <>
+                <div className="absolute inset-0 rounded-full bg-primary/10 animate-pulse-ring" />
+                <div className="absolute inset-0 rounded-full bg-primary/10 animate-pulse-ring" style={{ animationDelay: '1s' }} />
+              </>
+            )}
+            
+            {/* Main orb */}
             <div
-              className={`relative h-48 w-48 rounded-full bg-gradient-to-br ${getStateColor()} border flex items-center justify-center transition-all duration-300`}
+              className={`relative h-40 w-40 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${
+                voiceState === 'listening' 
+                  ? 'bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg shadow-primary/20' 
+                  : voiceState === 'thinking'
+                  ? 'bg-gradient-to-br from-muted to-muted/50 border-border'
+                  : voiceState === 'speaking'
+                  ? 'bg-gradient-to-br from-primary/30 to-primary/10 border-primary/40 shadow-lg shadow-primary/20'
+                  : voiceState === 'error'
+                  ? 'bg-gradient-to-br from-destructive/20 to-destructive/5 border-destructive/30'
+                  : 'bg-gradient-to-br from-muted to-muted/30 border-border'
+              }`}
             >
-
-              {/* Center content */}
-              <div className="text-center z-10">
-                <div className="h-24 w-24 rounded-full bg-background mx-auto flex items-center justify-center">
-                  {voiceState === 'listening' && (
-                    <Volume2 className="h-12 w-12 text-foreground/60" />
-                  )}
-                  
-                  {voiceState === 'thinking' && (
-                    <div className="flex gap-1.5">
-                      <div className="h-2.5 w-2.5 rounded-full bg-foreground/40 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <div className="h-2.5 w-2.5 rounded-full bg-foreground/40 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <div className="h-2.5 w-2.5 rounded-full bg-foreground/40 animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </div>
-                  )}
-                  
-                  {voiceState === 'speaking' && (
-                    <Volume2 className="h-12 w-12 text-foreground" />
-                  )}
-                  
-                  {voiceState === 'idle' && !isConversationActive && (
-                    <VolumeX className="h-12 w-12 text-muted-foreground" />
-                  )}
-                  
-                  {voiceState === 'idle' && isConversationActive && (
-                    <Volume2 className="h-12 w-12 text-foreground/40" />
-                  )}
-                  
-                  {voiceState === 'error' && (
-                    <AlertCircle className="h-12 w-12 text-red-500" />
-                  )}
-                </div>
+              {/* Icon */}
+              <div className="relative z-10">
+                {voiceState === 'listening' && (
+                  <Mic className="h-16 w-16 text-primary drop-shadow-lg" />
+                )}
+                
+                {voiceState === 'thinking' && (
+                  <div className="flex gap-2">
+                    <div className="h-3 w-3 rounded-full bg-primary animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <div className="h-3 w-3 rounded-full bg-primary animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <div className="h-3 w-3 rounded-full bg-primary animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                )}
+                
+                {voiceState === 'speaking' && (
+                  <div className="flex items-center gap-1.5">
+                    {[0, 1, 2, 3, 4].map((i) => (
+                      <div
+                        key={i}
+                        className="w-1.5 bg-primary rounded-full animate-pulse"
+                        style={{
+                          height: `${20 + Math.random() * 16}px`,
+                          animationDelay: `${i * 0.1}s`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+                
+                {voiceState === 'idle' && !isConversationActive && (
+                  <VolumeX className="h-16 w-16 text-muted-foreground" />
+                )}
+                
+                {voiceState === 'idle' && isConversationActive && (
+                  <Volume2 className="h-16 w-16 text-muted-foreground" />
+                )}
+                
+                {voiceState === 'error' && (
+                  <AlertCircle className="h-16 w-16 text-destructive" />
+                )}
               </div>
             </div>
           </div>
 
           {/* State Label */}
-          <div className="text-center space-y-1">
-            <p className={`text-base font-medium ${
-              voiceState === 'error' ? 'text-red-500' :
-              'text-foreground'
+          <div className="text-center space-y-1.5">
+            <p className={`text-lg font-semibold ${
+              voiceState === 'error' ? 'text-destructive' : 'text-foreground'
             }`}>
               {getStateLabel()}
             </p>
-            {isConversationActive && voiceState === 'listening' && (
-              <p className="text-xs text-muted-foreground">
-                Speak naturally, I'm listening...
-              </p>
-            )}
-            {isConversationActive && voiceState === 'idle' && (
-              <p className="text-xs text-muted-foreground">
-                Press play to resume
-              </p>
-            )}
+            <p className="text-sm text-muted-foreground max-w-[200px]">
+              {getStateDescription()}
+            </p>
           </div>
 
           {/* Pause/Resume Control */}
           {isConversationActive && (
             <button
               onClick={handlePlayPause}
-              className="rounded-full p-4 bg-muted hover:bg-muted/80 border border-border transition-all hover:scale-105 active:scale-95"
+              className="rounded-full p-4 bg-muted/50 hover:bg-muted border border-border transition-all hover:scale-105 active:scale-95 shadow-sm"
               aria-label={voiceState === 'idle' ? "Resume" : "Pause"}
               type="button"
             >
@@ -195,20 +206,20 @@ export default function VoicePanel({
           )}
         </div>
 
-        {/* Conversation Toggle */}
+        {/* Action Button */}
         <div className="pt-6 border-t border-border space-y-3">
           {errorMessage && (
-            <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20 animate-fade-in">
               <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
               <p className="text-xs text-destructive leading-relaxed">{errorMessage}</p>
             </div>
           )}
           <button
             onClick={handleConversationToggle}
-            className={`w-full rounded-lg px-4 py-3 text-sm font-medium transition-colors ${
+            className={`w-full rounded-xl px-4 py-3.5 text-sm font-semibold transition-all shadow-sm ${
               isConversationActive
-                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                : "bg-primary text-primary-foreground hover:bg-primary/90"
+                ? "bg-destructive/10 text-destructive hover:bg-destructive/20 border border-destructive/20"
+                : "bg-primary text-white hover:bg-primary/90 shadow-primary/20"
             }`}
           >
             {isConversationActive ? "End Conversation" : "Start Voice Mode"}
