@@ -20,8 +20,8 @@ export class TextBuffer {
   private isFirstFlush: boolean = true;
 
   constructor(options: BufferOptions = {}) {
-    this.minChars = options.minChars || 30;  // Smaller buffer for faster start
-    this.maxChars = options.maxChars || 60;  // Flush sooner
+    this.minChars = options.minChars || 20;  // Reduced from 30 for faster start
+    this.maxChars = options.maxChars || 40;  // Reduced from 60 for more frequent flushes
     this.sentenceBoundaries = options.sentenceBoundaries !== false;
   }
 
@@ -42,8 +42,8 @@ export class TextBuffer {
    */
   private shouldFlush(): boolean {
     // For first flush, use lower threshold for faster speech start
-    const effectiveMinChars = this.isFirstFlush ? 15 : this.minChars;
-    const effectiveMaxChars = this.isFirstFlush ? 40 : this.maxChars;
+    const effectiveMinChars = this.isFirstFlush ? 5 : this.minChars;  // Reduced from 15 to 5
+    const effectiveMaxChars = this.isFirstFlush ? 20 : this.maxChars;  // Reduced from 40 to 20
 
     // Flush if we've reached max chars
     if (this.buffer.length >= effectiveMaxChars) {
@@ -66,9 +66,11 @@ export class TextBuffer {
     }
 
     // For first chunk, flush even earlier if we have enough content
-    if (this.isFirstFlush && this.buffer.length >= 12) {
+    // Reduced threshold from 8 to 5 chars for faster TTS start (lower latency)
+    if (this.isFirstFlush && this.buffer.length >= 5) {
       const lastSpaceIndex = this.buffer.lastIndexOf(' ');
-      if (lastSpaceIndex > 8) {
+      // Flush if we have a word boundary after 3 chars (faster start)
+      if (lastSpaceIndex > 3 || this.buffer.length >= 8) {
         return true;
       }
     }

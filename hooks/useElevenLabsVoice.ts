@@ -49,7 +49,7 @@ const VAD_CONFIG = {
   minRecordingMs: 300,          // Minimum 300ms recording (reasonable minimum) - was 500ms
   minSpeechDurationMs: 400,     // Lower to 400ms (allows short responses like "yes") - was 800ms
   noiseMultiplier: 2.2,         // More balanced (research: 2.0-2.5x) - was 3.5 (too high)
-  debugLogging: true,           // Enable for diagnosis and monitoring
+  debugLogging: false,          // Disabled by default to reduce console overhead and improve latency
 };
 
 export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
@@ -68,6 +68,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const [transcript, setTranscript] = useState('');
   const [liveTranscript, setLiveTranscript] = useState(''); // Keep for API compatibility but won't use
   const [isActive, setIsActive] = useState<boolean>(false);
+  const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
 
   // Refs
   const wsManagerRef = useRef<ElevenLabsWebSocketManager | null>(null);
@@ -99,8 +100,9 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
   const fullTextSentToTTSRef = useRef<string>('');
   const hasStartedSpeakingRef = useRef<boolean>(false);
   
-  // Function ref to break circular dependency
+  // Function refs to break circular dependencies
   const stopRecordingAndTranscribeRef = useRef<(() => Promise<void>) | null>(null);
+  const startVADRef = useRef<(() => void) | null>(null);
 
   const log = useCallback((message: string, ...args: any[]) => {
     const context = voiceLogger.getContext();
@@ -220,8 +222,13 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
             // Return to listening
             transitionState('listening', 'playback ended');
             
-            // Resume recording
-            startRecording();
+            // Resume recording - use setTimeout to ensure state transition completes first
+            setTimeout(() => {
+              if (isActiveRef.current && stateRef.current === 'listening' && !isRecordingRef.current) {
+                log('Resuming recording after playback ended');
+                startRecording();
+              }
+            }, 100);
           }
         });
 
@@ -235,11 +242,12 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       }
     }
 
-    // Initialize text buffer with smaller thresholds for faster speech
+    // Initialize text buffer with optimized thresholds for faster speech
+    // Lower thresholds = faster TTS start = lower perceived latency
     if (!textBufferRef.current) {
       textBufferRef.current = new TextBuffer({
-        minChars: 30,  // Smaller buffer for faster start
-        maxChars: 60,  // Flush sooner
+        minChars: 20,  // Reduced from 25 for faster start
+        maxChars: 40,  // Reduced from 50 for more frequent flushes
         sentenceBoundaries: true,
       });
 
@@ -249,10 +257,8 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           fullTextSentToTTSRef.current += text;
           console.log('[Voice] Flushing to TTS:', text.length, 'chars');
           
-          // Update display as text is sent (will sync with audio)
-          if (fullTextSentToTTSRef.current.length > 0) {
-            onTextSpoken?.(fullTextSentToTTSRef.current);
-          }
+          // Don't update display here - wait for audio chunks to sync text with actual playback
+          // Text will be shown when audio chunks are received (in onAudioChunk callback)
           
           wsManagerRef.current.sendText(text, false);
         }
@@ -372,11 +378,13 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         onError?.(new Error('Recording error'));
       };
 
-      mediaRecorder.start(100); // Collect chunks every 100ms
+      mediaRecorder.start(50); // Collect chunks every 50ms for faster processing
       mediaRecorderRef.current = mediaRecorder;
       
-      // Start VAD monitoring
-      startVAD();
+      // Start VAD monitoring - use ref to avoid circular dependency
+      if (startVADRef.current) {
+        startVADRef.current();
+      }
       
     } catch (error: any) {
       log('Failed to start recording:', error);
@@ -475,20 +483,18 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
       const hasSpeechStart = speechRms > speechStartThreshold;
       const hasSilence = speechRms < silenceThreshold;
       
-      // Debug logging: detailed logs every 500ms when enabled, or key metrics every 2s otherwise
-      // This provides visibility into actual thresholds for diagnosis
-      if (VAD_CONFIG.debugLogging) {
-        if (now - lastLogTime > 500) {
-          console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speaking=${isSpeakingRef.current}`);
-          lastLogTime = now;
-        }
-      } else {
-        // Always log key metrics periodically (every 2 seconds) for diagnosis
-        // Provides visibility without overwhelming console
-        if (now - lastLogTime > 2000) {
-          console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speaking=${isSpeakingRef.current}`);
-          lastLogTime = now;
-        }
+      // Optimized logging: Only log key events to reduce console overhead
+      // This improves latency by reducing synchronous console.log calls
+      // Log only on state changes or periodically (every 3 seconds) when debug is off
+      const shouldLog = VAD_CONFIG.debugLogging 
+        ? (now - lastLogTime > 1000) // Debug: every 1s instead of 500ms
+        : (now - lastLogTime > 3000); // Production: every 3s instead of 2s
+      
+      if (shouldLog) {
+        // Only log if there's a significant change or it's been long enough
+        // This reduces console overhead which can block the main thread
+        console.log(`[VAD] Energy: ${speechRms.toFixed(4)}, noise=${noiseFloor.toFixed(4)}, thresh=${dynamicThreshold.toFixed(4)}, speaking=${isSpeakingRef.current}`);
+        lastLogTime = now;
       }
 
       if (!isSpeakingRef.current) {
@@ -619,6 +625,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
 
           // Transition to thinking state
           transitionState('thinking', 'transcribing audio');
+          setIsTranscribing(true);
 
           // Send to OpenAI Whisper STT (more reliable than ElevenLabs STT)
           const formData = new FormData();
@@ -634,11 +641,13 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           if (!response.ok) {
             const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
             console.error('[Voice] Transcription failed:', errorData);
+            setIsTranscribing(false);
             throw new Error(`Transcription failed: ${errorData.error || response.statusText}`);
           }
 
           const data = await response.json();
           const transcribedText = data.text?.trim();
+          setIsTranscribing(false);
 
           if (!transcribedText) {
             log('Empty transcription, resuming listening');
@@ -659,6 +668,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
           resolve();
         } catch (error: any) {
           log('Transcription error:', error);
+          setIsTranscribing(false);
           transitionState('listening', 'transcription error');
           onError?.(error);
           if (isActiveRef.current) {
@@ -676,10 +686,14 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     });
   }, [log, onTranscriptComplete, onError, transitionState, startRecording]);
 
-  // Update ref when stopRecordingAndTranscribe changes
+  // Update refs when functions change (to break circular dependencies)
   useEffect(() => {
     stopRecordingAndTranscribeRef.current = stopRecordingAndTranscribe;
   }, [stopRecordingAndTranscribe]);
+  
+  useEffect(() => {
+    startVADRef.current = startVAD;
+  }, [startVAD]);
 
   /**
    * Handle barge-in (user interrupts AI speaking)
@@ -735,22 +749,27 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
 
   /**
    * Prepare TTS context (called when LLM starts streaming)
+   * CRITICAL: Only creates one context per response to prevent duplicate audio
+   * This function is idempotent - safe to call multiple times, only creates context once
    */
   const prepareTTS = useCallback(() => {
     if (!isActiveRef.current || !wsManagerRef.current) return;
 
+    // Only prepare once per response (when ttsFirstChunkTimeRef is null)
+    // This prevents multiple context creation which causes duplicate audio
     if (ttsFirstChunkTimeRef.current === null) {
       ttsFirstChunkTimeRef.current = Date.now();
       log('Preparing TTS context');
       
-      // Close any existing context
+      // Close any existing context to ensure clean state
       if (wsManagerRef.current.getConnectionStatus()) {
         wsManagerRef.current.closeCurrentContext();
       }
       
-      // Create new context
+      // Create new context - only one per response
       wsManagerRef.current.createContext();
     }
+    // If already prepared, do nothing (prevents duplicate contexts)
   }, [log]);
 
   /**
@@ -788,8 +807,8 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
         textBufferRef.current.clear();
         // Add to accumulated text
         fullTextSentToTTSRef.current += remaining;
-        // Call text spoken callback
-        onTextSpoken?.(fullTextSentToTTSRef.current);
+        // Don't call onTextSpoken here - wait for audio chunks to sync text with actual playback
+        // Text will be shown when audio chunks are received (in onAudioChunk callback)
         // Send with flush=true to indicate end of text
         wsManagerRef.current.sendText(remaining, true);
         console.log('[Voice] Final TTS flush:', remaining.length, 'chars');
@@ -1026,6 +1045,7 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     isActive,
     transcript,
     liveTranscript, // Always empty now - no live transcription
+    isTranscribing,
     startConversation,
     endConversation,
     pauseConversation,

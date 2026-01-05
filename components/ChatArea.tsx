@@ -18,6 +18,8 @@ interface ChatAreaProps {
   isVoiceActive?: boolean;
   voiceTranscript?: string;
   voiceLiveTranscript?: string;
+  isProcessingPDF?: boolean;
+  isTranscribing?: boolean;
   onConfirmSection?: (section: string) => void;
   onEditField?: (field: keyof import("@/types/icp").ICPData, value: string) => void;
 }
@@ -29,6 +31,8 @@ export default function ChatArea({
   isVoiceActive = false,
   voiceTranscript = '',
   voiceLiveTranscript = '',
+  isProcessingPDF = false,
+  isTranscribing = false,
   onConfirmSection,
   onEditField,
 }: ChatAreaProps) {
@@ -111,6 +115,8 @@ export default function ChatArea({
               <div className={`inline-block max-w-[85%] rounded-2xl px-4 py-3 ${
                 message.role === "user"
                   ? "bg-foreground text-background"
+                  : message.content.toLowerCase().includes('error') || message.content.toLowerCase().includes('encountered')
+                  ? "bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400"
                   : "bg-muted/80 text-foreground"
               }`}>
                 {/* File attachment preview */}
@@ -148,72 +154,64 @@ export default function ChatArea({
           </div>
         ))}
       
-        {/* Voice Mode State Indicators */}
-        {isVoiceActive && (
-          <>
-            {voiceState === 'thinking' && (
-              <div className="flex gap-4 animate-fade-in">
-                <div className="flex-shrink-0 flex items-start">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
-                    <img 
-                      src="/Alex-Profile.png" 
-                      alt="Alex Profile" 
-                      className="h-full w-full object-cover"
-                    />
-                  </div>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="inline-block rounded-2xl bg-muted/80 px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex gap-1.5">
-                        <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '0ms' }}></div>
-                        <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '150ms' }}></div>
-                        <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '300ms' }}></div>
-                      </div>
-                      <span className="text-sm text-muted-foreground">Thinking...</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            {voiceState === 'speaking' && (
-              <div className="flex gap-4 animate-fade-in">
-                <div className="flex-shrink-0 flex items-center">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
-                    <img 
-                      src="/Alex-Profile.png" 
-                      alt="Alex Profile" 
-                      className="h-full w-full object-cover"
-                    />
-                  </div>
-                </div>
-                <div className="flex-1 min-w-0 flex items-center">
-                  <div className="inline-block rounded-2xl bg-muted/80 px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="flex gap-1 items-center">
-                        {[0, 1, 2, 3, 4].map((i) => (
-                          <div
-                            key={i}
-                            className="w-1 bg-primary rounded-full animate-pulse"
-                            style={{
-                              height: `${12 + Math.random() * 8}px`,
-                              animationDelay: `${i * 0.1}s`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                      <span className="text-sm text-foreground ml-2">Speaking...</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+        {/* Voice Mode State Indicators - Removed speaking indicator (orb already shows this) */}
         
+        {/* PDF Processing indicator */}
+        {isProcessingPDF && (
+          <div className="flex gap-4 animate-fade-in">
+            <div className="flex-shrink-0 flex items-start">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
+                <img 
+                  src="/Alex-Profile.png" 
+                  alt="Alex Profile" 
+                  className="h-full w-full object-cover"
+                />
+              </div>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="inline-block rounded-2xl bg-muted/80 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1.5">
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '0ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '150ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '300ms' }}></div>
+                  </div>
+                  <span className="text-sm text-muted-foreground">Processing PDF: Extracting text and analyzing ICP data...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STT Transcription indicator */}
+        {isTranscribing && voiceState === 'thinking' && (
+          <div className="flex gap-4 animate-fade-in">
+            <div className="flex-shrink-0 flex items-start">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
+                <img 
+                  src="/Alex-Profile.png" 
+                  alt="Alex Profile" 
+                  className="h-full w-full object-cover"
+                />
+              </div>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="inline-block rounded-2xl bg-muted/80 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1.5">
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '0ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '150ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-primary" style={{ animationDelay: '300ms' }}></div>
+                  </div>
+                  <span className="text-sm text-muted-foreground">Transcribing your speech...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Text mode loading indicator */}
-        {isLoading && !isVoiceActive && (
+        {isLoading && !isVoiceActive && !isProcessingPDF && (
           <div className="flex gap-4 animate-fade-in">
             <div className="flex-shrink-0 flex items-start">
               <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">

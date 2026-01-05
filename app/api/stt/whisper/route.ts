@@ -35,35 +35,60 @@ export async function POST(request: NextRequest) {
       type: audioBlob.type,
     });
 
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: openaiFormData,
-    });
+    // Create AbortController for timeout (30 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorData;
-      try {
-        errorData = JSON.parse(errorText);
-      } catch {
-        errorData = { error: errorText || 'Unknown error' };
+    try {
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: openaiFormData,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: errorText || 'Unknown error' };
+        }
+        console.error('OpenAI Whisper API error:', errorData);
+        return NextResponse.json(
+          { error: 'Failed to transcribe audio', details: errorData },
+          { status: response.status }
+        );
       }
-      console.error('OpenAI Whisper API error:', errorData);
+
+      const data = await response.json();
+      console.log('[Whisper STT] Transcription result:', data.text?.slice(0, 50) + '...');
+      
+      return NextResponse.json({
+        text: data.text || '',
+      });
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      
+      if (error.name === 'AbortError') {
+        console.error('Whisper STT timeout after 30 seconds');
+        return NextResponse.json(
+          { error: 'Transcription timeout', details: 'The transcription request took too long. Please try again.' },
+          { status: 504 }
+        );
+      }
+      
+      console.error('Whisper STT error:', error);
       return NextResponse.json(
-        { error: 'Failed to transcribe audio', details: errorData },
-        { status: response.status }
+        { error: 'Failed to transcribe audio with Whisper', details: error.message },
+        { status: 500 }
       );
     }
-
-    const data = await response.json();
-    console.log('[Whisper STT] Transcription result:', data.text?.slice(0, 50) + '...');
-    
-    return NextResponse.json({
-      text: data.text || '',
-    });
   } catch (error: any) {
     console.error('Whisper STT error:', error);
     return NextResponse.json(

@@ -5,7 +5,7 @@ import { X, FileText, Loader2 } from "lucide-react";
 interface FileAttachmentCardProps {
   file: File;
   onRemove: () => void;
-  status?: 'pending' | 'uploading' | 'processing' | 'done';
+  status?: 'pending' | 'done';
 }
 
 export default function FileAttachmentCard({ file, onRemove, status = 'pending' }: FileAttachmentCardProps) {
@@ -25,8 +25,6 @@ export default function FileAttachmentCard({ file, onRemove, status = 'pending' 
 
   const getStatusText = (): string => {
     switch (status) {
-      case 'uploading': return 'Uploading...';
-      case 'processing': return 'Processing...';
       case 'done': return 'Processed';
       default: return '';
     }
@@ -52,17 +50,16 @@ export default function FileAttachmentCard({ file, onRemove, status = 'pending' 
           {formatFileSize(file.size)}
         </p>
       </div>
-      {status === 'uploading' || status === 'processing' ? (
-        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-      ) : (
+      {status === 'pending' ? (
         <button
           onClick={onRemove}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-destructive/10 transition-colors"
           aria-label="Remove file"
-          disabled={status === 'uploading' || status === 'processing'}
         >
           <X className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
         </button>
+      ) : (
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
       )}
     </div>
   );

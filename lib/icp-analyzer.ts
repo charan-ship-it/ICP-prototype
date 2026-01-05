@@ -89,6 +89,56 @@ function isValidExtractedValue(value: string, fieldType: string): boolean {
   return true;
 }
 
+/**
+ * Validate company name - reject question patterns and invalid text
+ */
+function isValidCompanyName(text: string): boolean {
+  if (!text || text.trim().length < 2) return false;
+  
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  
+  // Reject if too long
+  if (trimmed.length > 100) return false;
+  
+  // Reject if doesn't start with capital letter (likely not a proper name)
+  if (!/^[A-Z]/.test(trimmed)) return false;
+  
+  // Reject question patterns
+  const questionPatterns = [
+    /^overview/i,
+    /^can you/i,
+    /^tell me/i,
+    /^how about/i,
+    /^what is/i,
+    /^what are/i,
+    /^could you/i,
+    /^would you/i,
+    /^please/i,
+  ];
+  
+  for (const pattern of questionPatterns) {
+    if (pattern.test(trimmed)) return false;
+  }
+  
+  // Reject if contains question marks or common question words
+  if (trimmed.includes('?') || 
+      lower.includes('overview') || 
+      lower.includes('tell me') ||
+      lower.includes('can you') ||
+      lower.includes('how about')) {
+    return false;
+  }
+  
+  // Reject if it's clearly a sentence/question (contains multiple words that form a question)
+  if (lower.match(/^(overview|can you|tell me|how about|what is|what are).+/)) {
+    return false;
+  }
+  
+  // Use general validation
+  return isValidExtractedValue(trimmed, 'company_name');
+}
+
 export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'): Partial<ICPData> {
   // If it's an AI message, try to extract from structured summaries
   if (role === 'assistant') {
@@ -115,8 +165,8 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
       const match = message.match(pattern);
       if (match && !detected.company_name && match[1].trim().length > 2 && match[1].trim().length < 100) {
         const name = match[1].trim();
-        // Validate extracted value
-        if (isValidExtractedValue(name, 'company_name')) {
+        // Validate using company name specific validation
+        if (isValidCompanyName(name)) {
           detected.company_name = name;
           break;
         }

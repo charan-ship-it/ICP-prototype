@@ -1,11 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Mark pdf-parse as external to prevent bundling issues (works with both Turbopack and webpack)
-  serverComponentsExternalPackages: ['pdf-parse'],
-  
   // Turbopack configuration (Next.js 16 default)
-  // serverComponentsExternalPackages handles externalization for Turbopack
-  turbopack: {},
+  turbopack: {
+    // Empty config to silence the warning - Turbopack handles externals automatically
+  },
   
   // Webpack configuration (fallback if --webpack flag is used)
   webpack: (config, { isServer }) => {
@@ -14,9 +12,20 @@ const nextConfig = {
       config.externals = config.externals || [];
       config.externals.push('pdf-parse');
     }
+    
+    // Improve build performance
+    config.optimization = {
+      ...config.optimization,
+      moduleIds: 'deterministic',
+    };
+    
     return config;
+  },
+  
+  // Performance optimizations
+  experimental: {
+    optimizePackageImports: ['lucide-react'],
   },
 };
 
 module.exports = nextConfig;
-
