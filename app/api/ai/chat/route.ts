@@ -48,6 +48,12 @@ export async function POST(request: NextRequest) {
 
     const messages = messagesResult.data || [];
     const icpData = icpResult.data;
+    
+    console.log('[AI Chat API] Received request', {
+      chatId,
+      messageCount: messages.length,
+      lastMessage: messages.length > 0 ? messages[messages.length - 1]?.content?.substring(0, 50) : 'none'
+    });
 
     // Format messages for OpenAI API
     const formattedMessages = messages.map((msg) => ({

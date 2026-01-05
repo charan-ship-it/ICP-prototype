@@ -53,9 +53,9 @@ function extractFromAISummary(message: string): Partial<ICPData> {
 // Helper to validate extracted value (filter out garbage/headers/placeholders)
 function isValidExtractedValue(value: string, fieldType: string): boolean {
   if (!value || value.trim().length < 2) return false;
-  
+
   const valueLower = value.toLowerCase().trim();
-  
+
   // Common table headers and garbage text
   const invalidPatterns = [
     'profile', 'example', 'sample', 'template', 'placeholder',
@@ -64,46 +64,46 @@ function isValidExtractedValue(value: string, fieldType: string): boolean {
     'role', 'decision maker', 'header', 'column',
     'n/a', 'tbd', 'todo', 'xxx', '___', '...',
   ];
-  
+
   // Check if it's a table header or placeholder
   for (const pattern of invalidPatterns) {
     if (valueLower === pattern || valueLower.includes(pattern)) {
       return false;
     }
   }
-  
+
   // Field-specific validation
   if (fieldType === 'location') {
     // Location shouldn't be "SaaS", "Tech", etc.
     if (valueLower.match(/^(saas|tech|b2b|b2c|software)$/)) return false;
   }
-  
+
   if (fieldType === 'budget') {
     // Budget should have numbers or ranges
     if (!valueLower.match(/\d/) && !valueLower.match(/k|m|thousand|million/)) return false;
   }
-  
+
   // Must have at least some meaningful content
   if (value.match(/^[^a-zA-Z0-9]+$/)) return false; // Only special chars
-  
+
   return true;
 }
 
 /**
  * Validate company name - reject question patterns and invalid text
  */
-function isValidCompanyName(text: string): boolean {
+export function isValidCompanyName(text: string): boolean {
   if (!text || text.trim().length < 2) return false;
-  
+
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
-  
+
   // Reject if too long
   if (trimmed.length > 100) return false;
-  
+
   // Reject if doesn't start with capital letter (likely not a proper name)
   if (!/^[A-Z]/.test(trimmed)) return false;
-  
+
   // Reject question patterns
   const questionPatterns = [
     /^overview/i,
@@ -116,25 +116,25 @@ function isValidCompanyName(text: string): boolean {
     /^would you/i,
     /^please/i,
   ];
-  
+
   for (const pattern of questionPatterns) {
     if (pattern.test(trimmed)) return false;
   }
-  
+
   // Reject if contains question marks or common question words
-  if (trimmed.includes('?') || 
-      lower.includes('overview') || 
-      lower.includes('tell me') ||
-      lower.includes('can you') ||
-      lower.includes('how about')) {
+  if (trimmed.includes('?') ||
+    lower.includes('overview') ||
+    lower.includes('tell me') ||
+    lower.includes('can you') ||
+    lower.includes('how about')) {
     return false;
   }
-  
+
   // Reject if it's clearly a sentence/question (contains multiple words that form a question)
   if (lower.match(/^(overview|can you|tell me|how about|what is|what are).+/)) {
     return false;
   }
-  
+
   // Use general validation
   return isValidExtractedValue(trimmed, 'company_name');
 }
@@ -151,16 +151,16 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
   const lowerMessage = message.toLowerCase();
 
   // Company Basics - Improved extraction
-  if (lowerMessage.includes('company') || lowerMessage.includes('business') || lowerMessage.includes('organization') || 
-      lowerMessage.includes('we are') || lowerMessage.includes("we're") || lowerMessage.includes('our company')) {
-    
+  if (lowerMessage.includes('company') || lowerMessage.includes('business') || lowerMessage.includes('organization') ||
+    lowerMessage.includes('we are') || lowerMessage.includes("we're") || lowerMessage.includes('our company')) {
+
     // Extract company name (improved patterns)
     const companyNamePatterns = [
       /(?:company|business|organization|we are|we're|called|named)\s+(?:is|are|named|called)?\s*([A-Z][a-zA-Z\s&.,'-]+)/i,
       /(?:my|our)\s+(?:company|business|organization)\s+(?:is|are|called|named)?\s*([A-Z][a-zA-Z\s&.,'-]+)/i,
       /^([A-Z][a-zA-Z\s&.,'-]+)\s+(?:is|are)\s+(?:my|our|a|the)\s+(?:company|business)/i,
     ];
-    
+
     for (const pattern of companyNamePatterns) {
       const match = message.match(pattern);
       if (match && !detected.company_name && match[1].trim().length > 2 && match[1].trim().length < 100) {
@@ -180,7 +180,7 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
       /(?:size|team)\s+(?:of|is|has)?\s*(\d+)/i,
       /(?:small|medium|large|enterprise|startup)\s+(?:company|business|organization)/i,
     ];
-    
+
     for (const pattern of sizePatterns) {
       const match = message.match(pattern);
       if (match) {
@@ -204,17 +204,17 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
 
     // Industry - expanded list and better matching
     const industries = [
-      'tech', 'technology', 'saas', 'software', 'healthcare', 'health care', 'finance', 'financial', 
+      'tech', 'technology', 'saas', 'software', 'healthcare', 'health care', 'finance', 'financial',
       'retail', 'education', 'manufacturing', 'consulting', 'marketing', 'real estate', 'realestate',
       'e-commerce', 'ecommerce', 'hospitality', 'travel', 'automotive', 'energy', 'telecommunications',
       'media', 'entertainment', 'legal', 'insurance', 'construction', 'agriculture', 'pharmaceutical',
       'biotech', 'aerospace', 'defense', 'government', 'non-profit', 'nonprofit', 'ngo'
     ];
-    
+
     for (const industry of industries) {
       if (lowerMessage.includes(industry)) {
         // Capitalize properly
-        const capitalized = industry.split(/[\s-]/).map(word => 
+        const capitalized = industry.split(/[\s-]/).map(word =>
           word.charAt(0).toUpperCase() + word.slice(1)
         ).join(industry.includes('-') ? '-' : ' ');
         detected.industry = capitalized;
@@ -227,7 +227,7 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
       /(?:located|based|in|from|operate\s+in)\s+(?:in|at)?\s*([A-Z][a-zA-Z\s,]+(?:city|state|country|USA|US|United States|UK|United Kingdom)?)/i,
       /(?:we|our|my)\s+(?:are|is)\s+(?:in|at|from)\s+([A-Z][a-zA-Z\s,]+)/i,
     ];
-    
+
     for (const pattern of locationPatterns) {
       const match = message.match(pattern);
       if (match && !detected.location && match[1].trim().length > 2 && match[1].trim().length < 100) {
@@ -242,10 +242,10 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
   }
 
   // Target Customer - More comprehensive detection
-  if (lowerMessage.includes('target') || lowerMessage.includes('customer') || lowerMessage.includes('client') || 
-      lowerMessage.includes('buyer') || lowerMessage.includes('company size') || lowerMessage.includes('mid-market') ||
-      lowerMessage.includes('industries') || lowerMessage.includes('decision-maker')) {
-    
+  if (lowerMessage.includes('target') || lowerMessage.includes('customer') || lowerMessage.includes('client') ||
+    lowerMessage.includes('buyer') || lowerMessage.includes('company size') || lowerMessage.includes('mid-market') ||
+    lowerMessage.includes('industries') || lowerMessage.includes('decision-maker')) {
+
     // Target customer type
     if (lowerMessage.includes('b2b') || lowerMessage.includes('business to business')) {
       detected.target_customer_type = 'B2B';
@@ -276,17 +276,17 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
   }
 
   // Problem & Pain - More comprehensive extraction
-  if (lowerMessage.includes('problem') || lowerMessage.includes('pain') || lowerMessage.includes('challenge') || 
-      lowerMessage.includes('issue') || lowerMessage.includes('struggle') || lowerMessage.includes('pain point') ||
-      lowerMessage.includes('difficulty') || lowerMessage.includes('frustration') || lowerMessage.includes('barrier')) {
-    
+  if (lowerMessage.includes('problem') || lowerMessage.includes('pain') || lowerMessage.includes('challenge') ||
+    lowerMessage.includes('issue') || lowerMessage.includes('struggle') || lowerMessage.includes('pain point') ||
+    lowerMessage.includes('difficulty') || lowerMessage.includes('frustration') || lowerMessage.includes('barrier')) {
+
     // Pain points - improved patterns
     const painPointPatterns = [
       /(?:pain\s*points?|pain\s*point)[\s:]+([^\n\.\?\!]+)/i,
       /(?:they|customers|clients|users)\s+(?:have|face|experience|struggle\s+with|deal\s+with)\s+([^\n\.\?\!]+)/i,
       /(?:main|primary|key)\s+(?:pain|problem|challenge|issue)[\s:]+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of painPointPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 5) {
@@ -298,13 +298,13 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         }
       }
     }
-    
+
     // Problems - improved patterns
     const problemPatterns = [
       /(?:problem|problems|challenge|challenges|issue|issues|struggle)[s]?\s*(?:is|are|:)?\s*([^\n\.\?\!]+)/i,
       /(?:the|their|main|primary)\s+(?:problem|challenge|issue)\s+(?:is|are|that)\s+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of problemPatterns) {
       const match = message.match(pattern);
       if (match && !detected.pain_points && match[1].trim().length > 5) {
@@ -312,13 +312,13 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         break;
       }
     }
-    
+
     // Current solutions
     const solutionPatterns = [
       /(?:currently|they|customers)\s+(?:use|are\s+using|have|rely\s+on)\s+([^\n\.\?\!]+)/i,
       /(?:current|existing)\s+(?:solution|solutions|tool|tools|system|systems)[\s:]+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of solutionPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 5) {
@@ -326,18 +326,18 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         break;
       }
     }
-    
+
     // Motivations/triggers - improved patterns
     const motivationPatterns = [
       /(?:motivated\s*by|motivation|trigger|triggers|driven\s+by)[\s:]+([^\n\.\?\!]+)/i,
       /(?:they|customers)\s+(?:are|get)\s+(?:motivated|driven)\s+(?:by|to)\s+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of motivationPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 5) {
         const motivationText = 'Motivated by: ' + match[1].trim();
-        detected.target_psychographics = detected.target_psychographics 
+        detected.target_psychographics = detected.target_psychographics
           ? detected.target_psychographics + ', ' + motivationText
           : motivationText;
         break;
@@ -347,16 +347,16 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
 
   // Buying Process - Improved extraction
   if (lowerMessage.includes('decision') || lowerMessage.includes('buying') || lowerMessage.includes('purchase') ||
-      lowerMessage.includes('process') || lowerMessage.includes('approve') || lowerMessage.includes('evaluation') ||
-      lowerMessage.includes('criteria') || lowerMessage.includes('evaluate')) {
-    
+    lowerMessage.includes('process') || lowerMessage.includes('approve') || lowerMessage.includes('evaluation') ||
+    lowerMessage.includes('criteria') || lowerMessage.includes('evaluate')) {
+
     // Decision makers - improved patterns
     const decisionMakerPatterns = [
       /(?:decision[- ]?makers?|decision[- ]?maker\s*roles?)[\s:]+([^\n\.\?\!]+)/i,
       /(?:who|the)\s+(?:makes|make|are|is)\s+(?:the\s+)?(?:decision|decisions)[\s:]+([^\n\.\?\!]+)/i,
       /(?:decisions?\s+(?:are|is)\s+made\s+by|decided\s+by)[\s:]+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of decisionMakerPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 3) {
@@ -364,14 +364,14 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         break;
       }
     }
-    
+
     // Buying process steps
     const processPatterns = [
       /(?:buying|purchase|sales)\s+process[\s:]+([^\n\.\?\!]+)/i,
       /(?:process|steps|workflow)\s+(?:is|are|involves?)[\s:]+([^\n\.\?\!]+)/i,
       /(?:they|customers)\s+(?:go\s+through|follow|use)\s+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of processPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 5) {
@@ -379,14 +379,14 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         break;
       }
     }
-    
+
     // Evaluation criteria
     const criteriaPatterns = [
       /(?:evaluation|evaluating|evaluate)\s+(?:criteria|factors?|considerations?)[\s:]+([^\n\.\?\!]+)/i,
       /(?:they|customers)\s+(?:look\s+for|consider|evaluate|judge)[\s:]+([^\n\.\?\!]+)/i,
       /(?:criteria|factors?)\s+(?:are|is|include)[\s:]+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of criteriaPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 5) {
@@ -397,14 +397,14 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
   }
 
   // Budget - Improved extraction with better patterns
-  if (lowerMessage.includes('budget') || lowerMessage.includes('price') || lowerMessage.includes('cost') || 
-      lowerMessage.includes('spend') || lowerMessage.includes('spending') || lowerMessage.includes('afford') ||
-      lowerMessage.includes('pay') || lowerMessage.includes('investment') || lowerMessage.includes('$')) {
-    
+  if (lowerMessage.includes('budget') || lowerMessage.includes('price') || lowerMessage.includes('cost') ||
+    lowerMessage.includes('spend') || lowerMessage.includes('spending') || lowerMessage.includes('afford') ||
+    lowerMessage.includes('pay') || lowerMessage.includes('investment') || lowerMessage.includes('$')) {
+
     // Try to extract any dollar amounts or pricing mentions
     const dollarMatches = message.match(/\$[\d,]+(?:k|m)?(?:\/mo|\/month|\/year|\/yr)?/gi);
     const rangeMatches = message.match(/\$[\d,]+(?:k|m)?\s*[-–to]\s*\$[\d,]+(?:k|m)?/gi);
-    
+
     if (rangeMatches && rangeMatches.length > 0) {
       detected.budget_range = rangeMatches.join(', ');
     } else if (dollarMatches && dollarMatches.length > 0) {
@@ -418,7 +418,7 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         /(?:they|customers)\s+(?:spend|have|allocate|budget)\s+\$?([\d,]+(?:\s*(?:k|thousand|million|m|K|M))?)/i,
         /(?:around|about|approximately)\s+\$?([\d,]+(?:\s*(?:k|thousand|million|m|K|M))?)/i,
       ];
-      
+
       for (const pattern of budgetPatterns) {
         const match = message.match(pattern);
         if (match && match[1] && match[1].trim().length > 0) {
@@ -434,16 +434,16 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
 
   // Decision Maker Role - Improved extraction
   if (lowerMessage.includes('decision') || lowerMessage.includes('approve') || lowerMessage.includes('buyer') ||
-      lowerMessage.includes('purchaser') || lowerMessage.includes('approver') || lowerMessage.includes('manager') ||
-      lowerMessage.includes('director') || lowerMessage.includes('executive') || lowerMessage.includes('ceo') ||
-      lowerMessage.includes('cto') || lowerMessage.includes('cfo')) {
-    
+    lowerMessage.includes('purchaser') || lowerMessage.includes('approver') || lowerMessage.includes('manager') ||
+    lowerMessage.includes('director') || lowerMessage.includes('executive') || lowerMessage.includes('ceo') ||
+    lowerMessage.includes('cto') || lowerMessage.includes('cfo')) {
+
     const decisionRolePatterns = [
       /(?:decision\s*maker|approver|buyer|purchaser)[s]?\s*(?:is|are|:)?\s*([^\n\.\?\!]+)/i,
       /(?:the|who)\s+(?:decision|approval|purchase)\s+(?:is|are)\s+(?:made\s+by|decided\s+by)[\s:]+([^\n\.\?\!]+)/i,
       /(?:role|position|title)\s+(?:is|are|:)?\s*([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of decisionRolePatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 3) {
@@ -455,13 +455,13 @@ export function analyzeMessageForICP(message: string, role: 'user' | 'assistant'
         }
       }
     }
-    
+
     // Approval process
     const approvalPatterns = [
       /(?:approval|approve)\s+process[\s:]+([^\n\.\?\!]+)/i,
       /(?:how|the)\s+(?:approval|approve|approving)\s+(?:works?|process|happens?)[\s:]+([^\n\.\?\!]+)/i,
     ];
-    
+
     for (const pattern of approvalPatterns) {
       const match = message.match(pattern);
       if (match && match[1].trim().length > 5) {
@@ -485,12 +485,12 @@ export function checkSectionComplete(section: typeof ICP_SECTIONS[0], icpData: I
     const value = icpData[field as keyof ICPData];
     return value && typeof value === 'string' && value.trim().length > 0;
   });
-  
+
   // Company Basics requires ALL 4 fields to be complete
   if (section.name === 'Company Basics') {
     return filledFields.length === section.fields.length; // Must have all 4 fields
   }
-  
+
   // For other sections, require ALL fields as well
   // This ensures completeness before marking section as done
   return filledFields.length === section.fields.length;
@@ -501,11 +501,11 @@ export function checkSectionComplete(section: typeof ICP_SECTIONS[0], icpData: I
  */
 export function updateSectionCompletion(icpData: ICPData): ICPData {
   const updated = { ...icpData };
-  
+
   for (const section of ICP_SECTIONS) {
-    updated[section.completeKey as keyof ICPData] = checkSectionComplete(section, icpData) as any;
+    (updated as any)[section.completeKey] = checkSectionComplete(section, icpData);
   }
-  
+
   // Log completion status for debugging
   console.log('[ICP Analyzer] Section completion:', {
     company_basics: updated.company_basics_complete,
@@ -514,7 +514,7 @@ export function updateSectionCompletion(icpData: ICPData): ICPData {
     buying_process: updated.buying_process_complete,
     budget_decision: updated.budget_decision_complete,
   });
-  
+
   return updated;
 }
 

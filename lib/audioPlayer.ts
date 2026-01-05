@@ -25,7 +25,7 @@ export class AudioPlayer {
     }
 
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    
+
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
@@ -68,29 +68,29 @@ export class AudioPlayer {
         // Re-throw other errors
         throw decodeError;
       }
-      
+
       // Double-check context is still valid after async decode
-      if (!this.audioContext || this.audioContext.state === 'closed' || this.isStopping) {
+      if (!this.audioContext || (this.audioContext.state as string) === 'closed' || this.isStopping) {
         return;
       }
-      
+
       // Create source node
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.audioContext.destination);
-      
+
       // Store source for cleanup
       this.sourceNode = source;
-      
+
       // Handle ended
       source.onended = () => {
         this.sourceNode = null;
-        
+
         // Check if we're stopping - if so, don't process queue
         if (this.isStopping) {
           return;
         }
-        
+
         if (this.audioQueue.length > 0) {
           // Play next chunk in queue
           const nextChunk = this.audioQueue.shift()!;
@@ -98,7 +98,7 @@ export class AudioPlayer {
             if (this.isStopping) {
               return;
             }
-            
+
             this.playChunk(nextChunk).catch(() => {
               // Silently handle errors - corrupted chunks are skipped
               // Continue with next chunk if available
@@ -137,9 +137,9 @@ export class AudioPlayer {
     if (this.isStopping) {
       return; // Don't queue if stopping
     }
-    
+
     this.audioQueue.push(audioData);
-    
+
     if (!this.isPlaying && !this.isPaused) {
       // Start playing if not already playing
       const nextChunk = this.audioQueue.shift();
@@ -157,10 +157,10 @@ export class AudioPlayer {
   stop(): void {
     // Set flag FIRST to prevent onended from processing queue
     this.isStopping = true;
-    
+
     // Clear queue BEFORE stopping node to prevent race condition
     this.audioQueue = [];
-    
+
     if (this.sourceNode) {
       try {
         this.sourceNode.stop();
@@ -169,10 +169,10 @@ export class AudioPlayer {
       }
       this.sourceNode = null;
     }
-    
+
     this.isPlaying = false;
     this.isPaused = false;
-    
+
     // Reset flag after a short delay
     setTimeout(() => {
       this.isStopping = false;

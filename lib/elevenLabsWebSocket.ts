@@ -31,6 +31,8 @@ export class ElevenLabsWebSocketManager {
   private options: TTSOptions;
   private lastTextSentTime: number = 0;
   private hasStartedSpeaking: boolean = false;
+  private isIntentionallyDisconnecting: boolean = false;
+  private reconnectTimeout: NodeJS.Timeout | null = null;
 
   // Callbacks
   private onAudioChunkCallback?: (chunk: AudioChunk) => void;
@@ -56,8 +58,23 @@ export class ElevenLabsWebSocketManager {
    * Connect to Eleven Labs WebSocket
    */
   async connect(): Promise<void> {
+    // Don't connect if intentionally disconnecting
+    if (this.isIntentionallyDisconnecting) {
+      return;
+    }
+    
     if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
       return;
+    }
+    
+    // Close existing connection if it exists but is not open
+    if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+      try {
+        this.ws.close();
+      } catch (e) {
+        // Ignore errors when closing
+      }
+      this.ws = null;
     }
 
     return new Promise((resolve, reject) => {
@@ -99,32 +116,65 @@ export class ElevenLabsWebSocketManager {
         };
 
         this.ws.onclose = (event) => {
-          // Only log disconnections if they're unexpected (not intentional close)
-          if (event.code !== 1000) {
-            // Silent - reconnection will handle it
-          }
           this.isConnected = false;
           this.stopKeepAlive();
           this.hasStartedSpeaking = false;
+          
+          // CRITICAL FIX: Log close event details for debugging
+          console.log('[WebSocket] Connection closed', {
+            code: event.code,
+            reason: event.reason || 'No reason provided',
+            wasClean: event.wasClean,
+            isIntentionallyDisconnecting: this.isIntentionallyDisconnecting,
+            reconnectAttempts: this.reconnectAttempts
+          });
+          
+          // Clear any pending reconnect timeout
+          if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+          }
+          
           this.onDisconnectCallback?.();
           
-          // Attempt reconnect if not intentional
-          if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+          // CRITICAL FIX: Only attempt reconnect if:
+          // 1. Not an intentional disconnect
+          // 2. Not a normal closure (code 1000)
+          // 3. Haven't exceeded max attempts
+          // 4. Connection is still needed (not conversation end)
+          if (!this.isIntentionallyDisconnecting && 
+              event.code !== 1000 && 
+              this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
-            const delay = 1000 * this.reconnectAttempts;
-            // Silently attempt reconnection - don't log unless it's the final attempt
-            setTimeout(() => {
-              this.connect().catch(() => {
-                // Silently handle reconnection failures - will retry automatically
-                if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-                  // Only notify on final failure
-                  this.onErrorCallback?.(new Error('Failed to reconnect after multiple attempts'));
-                }
-              });
+            const delay = Math.min(1000 * this.reconnectAttempts, 5000); // Max 5 second delay
+            console.log('[WebSocket] Scheduling reconnect attempt', {
+              attempt: this.reconnectAttempts,
+              delay,
+              maxAttempts: this.maxReconnectAttempts
+            });
+            this.reconnectTimeout = setTimeout(() => {
+              this.reconnectTimeout = null;
+              // Only reconnect if still needed (not intentionally disconnected)
+              if (!this.isIntentionallyDisconnecting) {
+                console.log('[WebSocket] Attempting reconnection...');
+                this.connect().catch(() => {
+                  // Silently handle reconnection failures - will retry automatically
+                  if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                    // Only notify on final failure
+                    this.onErrorCallback?.(new Error('Failed to reconnect after multiple attempts'));
+                  }
+                });
+              }
             }, delay);
-          } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            // Only notify on final failure
+          } else if (this.reconnectAttempts >= this.maxReconnectAttempts && !this.isIntentionallyDisconnecting) {
+            // Only notify on final failure if not intentional
+            console.error('[WebSocket] Max reconnection attempts reached');
             this.onErrorCallback?.(new Error('WebSocket connection lost and reconnection failed'));
+          }
+          
+          // Reset intentional disconnect flag after handling
+          if (this.isIntentionallyDisconnecting) {
+            this.isIntentionallyDisconnecting = false;
           }
         };
       } catch (error) {
@@ -270,11 +320,17 @@ export class ElevenLabsWebSocketManager {
         } else if (data.error) {
           // Handle specific errors gracefully
           if (data.error === 'input_timeout_exceeded') {
-            // This is expected when connection is idle - reconnect silently
-            this.disconnect();
-            this.connect().catch(() => {
-              // Silently handle reconnection failures
-            });
+            // This is expected when connection is idle - only reconnect if we're still active
+            // Don't reconnect if we're intentionally disconnecting or if connection is already closed
+            if (this.ws?.readyState === WebSocket.OPEN && !this.isIntentionallyDisconnecting) {
+              // Close current connection and reconnect
+              this.ws.close(1000, 'Timeout - reconnecting');
+              // Reset reconnect attempts for timeout (it's expected)
+              this.reconnectAttempts = 0;
+              this.connect().catch(() => {
+                // Silently handle reconnection failures
+              });
+            }
           } else {
             // Other errors - handle silently unless critical
             // Most server errors are transient and will resolve on reconnect
@@ -325,7 +381,15 @@ export class ElevenLabsWebSocketManager {
    * Disconnect from WebSocket
    */
   disconnect(): void {
+    this.isIntentionallyDisconnecting = true;
     this.stopKeepAlive();
+    
+    // Clear any pending reconnect timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    
     if (this.ws) {
       this.ws.close(1000, 'Intentional disconnect');
       this.ws = null;
@@ -334,6 +398,7 @@ export class ElevenLabsWebSocketManager {
     this.contexts.clear();
     this.currentContextId = null;
     this.hasStartedSpeaking = false;
+    this.reconnectAttempts = 0; // Reset reconnect attempts on intentional disconnect
   }
 
   /**

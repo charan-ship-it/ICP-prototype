@@ -20,7 +20,7 @@ const ICPDocumentViewer = dynamic(() => import("@/components/ICPDocumentViewer")
 import { getOrCreateSessionId } from "@/lib/session";
 import { ChatListItem, MessageDisplay } from "@/types/chat";
 import { ICPData, calculateProgress } from "@/types/icp";
-import { analyzeMessageForICP, updateSectionCompletion } from "@/lib/icp-analyzer";
+import { analyzeMessageForICP, updateSectionCompletion, isValidCompanyName } from "@/lib/icp-analyzer";
 import { useElevenLabsVoice } from "@/hooks/useElevenLabsVoice";
 import { voiceLogger } from "@/lib/voiceLogger";
 import { ToastContainer, Toast } from "@/components/Toast";
@@ -51,103 +51,110 @@ export default function Home() {
   const currentSummaryRef = useRef<string | null>(null); // Store summary for current message (for voice mode)
   const currentSummaryMessageIdRef = useRef<string | null>(null); // Store the summary message ID
   const voiceStreamingMessageIdRef = useRef<string | null>(null); // Store the message ID for streaming voice text
+  const lastSpokenTextRef = useRef<{ messageId: string; text: string } | null>(null); // Track last spoken text for idempotent updates
 
   // Initialize voice hook (will use handleSendMessageRef)
   const voiceHook = useElevenLabsVoice({
     sessionId,
     onTranscriptComplete: async (text) => {
-      voiceLogger.log('STT', 'Transcript complete callback received', { 
-        conversationId: conversationIdRef.current, 
+      // PREVENT DOUBLE VOICE: Ignore voice commands while processing PDF
+      // This prevents the "2 voices" issue where the file upload triggers a response
+      // AND the voice input (or noise) triggers a second response simultaneously.
+      if (isProcessingPDF) {
+        voiceLogger.log('STT', 'Ignoring voice command during PDF processing', {
+          conversationId: conversationIdRef.current,
+          chatId: conversationChatIdRef.current
+        });
+        console.log('[app/page.tsx] onTranscriptComplete: Ignoring text because PDF is processing');
+        return;
+      }
+
+      voiceLogger.log('STT', 'Transcript complete callback received', {
+        conversationId: conversationIdRef.current,
         chatId: conversationChatIdRef.current,
         text: text ? text.substring(0, 50) + (text.length > 50 ? '...' : '') : 'empty',
         textLength: text?.length || 0,
         hasHandleSendMessage: !!handleSendMessageRef.current
       });
       console.log('[app/page.tsx] Voice transcript received:', text);
-      
+
       if (text && text.trim() && handleSendMessageRef.current) {
-        voiceLogger.log('STT', 'Calling handleSendMessage', { 
-          conversationId: conversationIdRef.current, 
-          chatId: conversationChatIdRef.current 
+        voiceLogger.log('STT', 'Calling handleSendMessage', {
+          conversationId: conversationIdRef.current,
+          chatId: conversationChatIdRef.current
         });
         await handleSendMessageRef.current(text.trim());
       } else {
-        voiceLogger.log('STT', 'Skipping handleSendMessage', { 
-          conversationId: conversationIdRef.current, 
+        voiceLogger.log('STT', 'Skipping handleSendMessage', {
+          conversationId: conversationIdRef.current,
           chatId: conversationChatIdRef.current,
           reason: !text ? 'no text' : !text.trim() ? 'empty text' : !handleSendMessageRef.current ? 'no handler' : 'unknown'
         });
       }
     },
     onTextSpoken: (spokenText) => {
-      // Show text in chat area as it's being spoken (like ChatGPT Voice)
-      console.log('[onTextSpoken] Text being spoken:', spokenText.length, 'chars');
-      
+      // Only UPDATE existing message, never create
+      const messageId = lastAIMessageIdRef.current || voiceStreamingMessageIdRef.current;
+      if (!messageId) {
+        console.warn('[onTextSpoken] No message ID - message should have been created at stream start');
+        return;
+      }
+
       // Combine summary with AI response if we have a summary
       const summary = currentSummaryRef.current;
-      const displayContent = summary 
+      const displayContent = summary
         ? `${summary}\n\n${spokenText}`
         : spokenText;
-      
+
       if (!displayContent || !displayContent.trim()) {
         return;
       }
-      
-      // CRITICAL: Determine message ID - use existing refs or create ONE stable ID
-      const serverMessageId = lastAIMessageIdRef.current;
-      const summaryMessageId = currentSummaryMessageIdRef.current;
-      
-      // Priority: server ID > summary ID > existing streaming ID > create new stable ID
-      let messageId = serverMessageId || summaryMessageId || voiceStreamingMessageIdRef.current;
-      
-      // Only create a new ID if we don't have one yet (first call)
-      if (!messageId) {
-        messageId = `voice-streaming-${Date.now()}`;
-        voiceStreamingMessageIdRef.current = messageId; // Store it immediately
+
+      // CRITICAL: Check if this is duplicate (same text for same message)
+      if (lastSpokenTextRef.current?.messageId === messageId &&
+        lastSpokenTextRef.current?.text === spokenText) {
+        // Identical update - ignore (idempotent)
+        return;
       }
-      
+
+      // Update last spoken text
+      lastSpokenTextRef.current = { messageId, text: spokenText };
+
+      // Update existing message
       setMessages((prev) => {
-        // Check if a message with this ID already exists
         const existingIndex = prev.findIndex(msg => msg.id === messageId);
-        
         if (existingIndex >= 0) {
-          // Update existing message (streaming update)
           const updated = [...prev];
-          updated[existingIndex] = { 
-            ...updated[existingIndex], 
+          updated[existingIndex] = {
+            ...updated[existingIndex],
             content: displayContent,
             timestamp: new Date(),
           };
           return updated;
         }
-        
-        // Create new assistant message - append to end (only happens on first call)
-        return [...prev, {
-          id: messageId,
-          role: 'assistant' as const,
-          content: displayContent,
-          timestamp: new Date(),
-        }];
+        // Message should exist - log warning
+        console.warn('[onTextSpoken] Message not found, should have been created at stream start');
+        return prev;
       });
-      
+
       // Also update streaming content for VoicePanel if needed
       setStreamingAIContent(displayContent);
     },
     onSpeakingComplete: (finalText) => {
       // Finalize the message with complete text (message was already created/updated by onTextSpoken)
       console.log('[onSpeakingComplete] Voice finished, finalizing message:', finalText.length, 'chars');
-      
+
       // Combine summary with AI response if we have a summary
       const summary = currentSummaryRef.current;
-      const fullContent = summary 
+      const fullContent = summary
         ? `${summary}\n\n${finalText}`
         : finalText;
-      
+
       if (!fullContent || !fullContent.trim()) {
         console.log('[onSpeakingComplete] No text to finalize');
         return;
       }
-      
+
       // CRITICAL: Find the most recent assistant message that was created during streaming
       // This ensures we update the correct message, not create a duplicate
       setMessages((prev) => {
@@ -155,42 +162,42 @@ export default function Home() {
         const serverMessageId = lastAIMessageIdRef.current;
         const summaryMessageId = currentSummaryMessageIdRef.current;
         const streamingMessageId = voiceStreamingMessageIdRef.current;
-        
+
         // Priority: server ID > summary ID > streaming ID > find last assistant message
         let messageId = serverMessageId || summaryMessageId || streamingMessageId;
-        
+
         // If we have an ID, try to find and update that message
         if (messageId) {
           const existingIndex = prev.findIndex(msg => msg.id === messageId);
           if (existingIndex >= 0) {
             // Update existing message with final content
             const updated = [...prev];
-            updated[existingIndex] = { 
-              ...updated[existingIndex], 
+            updated[existingIndex] = {
+              ...updated[existingIndex],
               content: fullContent,
               timestamp: new Date(),
             };
             return updated;
           }
         }
-        
+
         // If no ID or message not found, find the last assistant message (should be the one we just created)
         // This handles edge cases where refs might be cleared
         const lastAssistantIndex = prev.map((msg, idx) => ({ msg, idx }))
           .filter(({ msg }) => msg.role === 'assistant')
           .pop()?.idx;
-        
+
         if (lastAssistantIndex !== undefined && lastAssistantIndex >= 0) {
           // Update the last assistant message
           const updated = [...prev];
-          updated[lastAssistantIndex] = { 
-            ...updated[lastAssistantIndex], 
+          updated[lastAssistantIndex] = {
+            ...updated[lastAssistantIndex],
             content: fullContent,
             timestamp: new Date(),
           };
           return updated;
         }
-        
+
         // Last resort: create new message (shouldn't happen, but handle it)
         console.warn('[onSpeakingComplete] No existing message found, creating new one');
         return [...prev, {
@@ -200,7 +207,7 @@ export default function Home() {
           timestamp: new Date(),
         }];
       });
-      
+
       // Clear the stored refs after using them
       lastAIMessageIdRef.current = null;
       currentSummaryRef.current = null;
@@ -245,9 +252,9 @@ export default function Home() {
     const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     const fullMessage = `${context}: ${errorMessage}`;
     console.error(fullMessage, error);
-    
+
     showToast(errorMessage, 'error');
-    
+
     if (showInChat) {
       setMessages((prev) => [...prev, {
         id: `error-${Date.now()}`,
@@ -275,12 +282,12 @@ export default function Home() {
   // Load chats for the session
   const loadChats = async (sid: string) => {
     if (!sid) return;
-    
+
     setIsLoadingChats(true);
     try {
       const response = await fetch(`/api/chats?session_id=${sid}`);
       if (!response.ok) throw new Error('Failed to load chats');
-      
+
       const data = await response.json();
       // Convert timestamp strings to Date objects
       const chatsWithDates = data.map((chat: any) => ({
@@ -324,7 +331,7 @@ export default function Home() {
       setMessages([]);
       setIcpData(null);
       setProgress(0);
-      
+
       // Add new chat to list immediately (with Date conversion)
       setChats((prev) => [
         {
@@ -334,7 +341,7 @@ export default function Home() {
         },
         ...prev,
       ]);
-      
+
       // Reload chats list to ensure consistency
       loadChats(sessionId);
     } catch (error) {
@@ -382,7 +389,7 @@ export default function Home() {
       conversationChatIdRef.current = null;
       conversationIdRef.current = null;
     }
-    
+
     setSelectedChatId(chatId);
     // CRITICAL FIX: Sync conversationChatIdRef when voice is NOT active
     // This ensures both systems use the same chatId
@@ -523,7 +530,7 @@ export default function Home() {
       selectedChatId,
       voiceActive: voiceHook.isActive,
     });
-    
+
     // Generate conversationId if not set (for logging)
     if (!conversationIdRef.current) {
       conversationIdRef.current = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -533,24 +540,24 @@ export default function Home() {
     // Prioritize conversationChatIdRef for voice conversations, fallback to selectedChatId
     let chatId = conversationChatIdRef.current || selectedChatId;
     let isNewChat = false;
-    
+
     // CRITICAL FIX: If voice mode is starting and we have a selectedChatId, use it
     // This ensures voice mode uses the existing chat where documents were uploaded
     if (!chatId && voiceHook.isActive && selectedChatId) {
       chatId = selectedChatId;
       conversationChatIdRef.current = selectedChatId || null;
-      voiceLogger.log('ChatId', 'Syncing chatId from selectedChatId for voice mode', { 
-        conversationId: conversationIdRef.current, 
-        chatId 
+      voiceLogger.log('ChatId', 'Syncing chatId from selectedChatId for voice mode', {
+        conversationId: conversationIdRef.current,
+        chatId
       });
     }
-    
+
     if (!chatId) {
       if (!sessionId) {
         voiceLogger.error('ChatId', 'No sessionId available', { conversationId: conversationIdRef.current });
         return;
       }
-      
+
       try {
         voiceLogger.log('ChatId', 'Creating new chat', { conversationId: conversationIdRef.current });
         const response = await fetch('/api/chats', {
@@ -562,13 +569,13 @@ export default function Home() {
         if (!response.ok) throw new Error('Failed to create chat');
         const newChat = await response.json();
         chatId = newChat.id;
-        
+
         // Set both ref (for voice conversation stability) and state (for UI)
         conversationChatIdRef.current = chatId || null;
         setSelectedChatId(chatId);
         voiceLogger.setChatId(chatId || null);
         voiceLogger.log('ChatId', `Using chatId: ${chatId}`, { conversationId: conversationIdRef.current, isNew: true });
-        
+
         isNewChat = true;
         // Clear messages for new chat
         setMessages([]);
@@ -587,35 +594,41 @@ export default function Home() {
     let finalContent = content;
     let fileAttachment: { name: string; size: number; type: string } | undefined;
     let icpExtraction: { summary: string; extractedFields: any; filledSections: string[] } | undefined;
-    
+    let processedICPData: ICPData | null = null; // Track fresh data from PDF processing
+
     if (file) {
+      // Start file processing
+      if (voiceHook.isActive) {
+        voiceHook.pauseMicrophone(); // Pause VAD during processing
+      }
+      if (file.type === 'application/pdf') {
+        setIsProcessingPDF(true);
+      }
+
       try {
         console.log('Processing file:', file.name);
-        
+
         if (file.type === 'application/pdf') {
-          // Process PDF: extract text, parse ICP fields, auto-fill ICP data
-          if (!chatId) {
-            throw new Error('ChatId is required for file processing');
-          }
-          
           setIsProcessingPDF(true);
-          // Show processing message in chat
-          setMessages((prev) => [...prev, {
-            id: `pdf-processing-${Date.now()}`,
-            role: 'assistant',
-            content: 'Processing PDF: Extracting text and analyzing ICP data...',
-            timestamp: new Date(),
-          }]);
-          
+
+          if (!chatId) {
+            // If no chatId, wait for it (should be created by now)
+            if (!selectedChatId) {
+              throw new Error('ChatId is required for file processing');
+            }
+          }
+
+          // Don't add text message - ChatArea will show the animation indicator
+
           const formData = new FormData();
           formData.append('file', file);
-          formData.append('chatId', chatId);
-          
+          formData.append('chatId', chatId!);
+
           const processResponse = await fetch('/api/files/process-pdf', {
             method: 'POST',
             body: formData,
           });
-          
+
           if (!processResponse.ok) {
             const errorData = await processResponse.json().catch(() => ({}));
             const errorMessage = errorData.message || errorData.error || 'Failed to process PDF';
@@ -623,7 +636,7 @@ export default function Home() {
             console.error('[PDF Processing] Server error:', errorData);
             throw new Error(`${errorMessage}${errorDetails}`);
           }
-          
+
           const processData = await processResponse.json();
           console.log('[PDF Processing] Full response:', {
             hasSummary: !!processData.summary,
@@ -631,57 +644,58 @@ export default function Home() {
             hasIcpData: !!processData.icpData,
             filledSections: processData.filledSections,
           });
-          
+
           icpExtraction = {
             summary: processData.summary,
             extractedFields: processData.extractedFields,
             filledSections: processData.filledSections,
           };
-          
-          // Update ICP data in state - show panel if we have ANY extracted data
+
+          // Update ICP data in state - show panel if we have ANY extraction
           const hasExtractedData = processData.extractedFields && Object.keys(processData.extractedFields).length > 0;
-          
+
           if (processData.icpData || hasExtractedData) {
             // Use icpData if available, otherwise construct from extractedFields
             const dataToShow = processData.icpData || {
               chat_id: chatId,
               ...processData.extractedFields,
             };
-            
+
+            // CRITICAL: Capture the fresh data to use in subsequent logic
+            processedICPData = dataToShow;
+
             console.log('[PDF Processing] Setting pending ICP data:', dataToShow);
-            
-            // CRITICAL: Sync conversationChatIdRef so voice mode uses the same chat
-            // This ensures voice mode has context from the uploaded document
+
+            // Sync conversationChatIdRef variables
             if (!voiceHook.isActive && chatId) {
               conversationChatIdRef.current = chatId;
-              console.log('[PDF Processing] Synced conversationChatIdRef:', chatId);
             }
-            
+
             // Store as pending data for user to confirm via cards
             setPendingICPData(dataToShow);
+            setIcpData(dataToShow);
+
+            // Re-calculate progress based on the new data
+            const newProgress = calculateProgress(dataToShow);
+            setProgress(newProgress);
+
             setShowICPCards(true);
             console.log('[PDF Processing] showICPCards set to true');
-            
-            // Also update current ICP data for progress calculation
-            setIcpData(dataToShow);
-            const newProgress = calculateProgress(dataToShow);
-            console.log('[PDF Processing] New progress:', newProgress);
-            setProgress(newProgress);
           } else {
             console.warn('[PDF Processing] No icpData or extractedFields in response!', processData);
           }
-          
-          // Store extracted text for AI context (don't show to user)
-          // Format it clearly so AI recognizes this as authoritative document content
+
+          // Store extracted text for AI context
           if (processData.extractedText) {
-            finalContent = content 
+            finalContent = content
               ? `${content}\n\n=== DOCUMENT CONTENT (AUTHORITATIVE SOURCE) ===\n[Document: ${file.name}]\n\n${processData.extractedText}\n\n=== END DOCUMENT CONTENT ===\n\nIMPORTANT: All information in the document above is COMPLETE and AUTHORITATIVE. Extract all ICP information from it directly. Do NOT ask the user to repeat information that is already in this document.`
               : `=== DOCUMENT CONTENT (AUTHORITATIVE SOURCE) ===\n[Document: ${file.name}]\n\n${processData.extractedText}\n\n=== END DOCUMENT CONTENT ===\n\nIMPORTANT: All information in the document above is COMPLETE and AUTHORITATIVE. Extract all ICP information from it directly. Do NOT ask the user to repeat information that is already in this document.`;
           }
-          
+
           // Remove processing message and show completion
           setMessages((prev) => prev.filter(msg => !msg.id?.startsWith('pdf-processing-')));
           setIsProcessingPDF(false);
+
         } else {
           // For text files, just read content (no ICP extraction)
           const reader = new FileReader();
@@ -690,7 +704,7 @@ export default function Home() {
               try {
                 const text = e.target?.result as string;
                 const maxLength = 50000;
-                const truncated = text.length > maxLength 
+                const truncated = text.length > maxLength
                   ? text.substring(0, maxLength) + '\n\n... (file truncated - too large)'
                   : text;
                 resolve(truncated);
@@ -701,13 +715,13 @@ export default function Home() {
             reader.onerror = () => reject(new Error('Failed to read file'));
             reader.readAsText(file);
           });
-          
+
           // For text files, include content in message
-          finalContent = content 
+          finalContent = content
             ? `${content}\n\n[File: ${file.name}]\n\n${fileContent}`
             : `[File: ${file.name}]\n\n${fileContent}`;
         }
-        
+
         // Store file attachment info
         fileAttachment = {
           name: file.name,
@@ -720,9 +734,14 @@ export default function Home() {
         setMessages((prev) => prev.filter(msg => !msg.id?.startsWith('pdf-processing-')));
         handleError(error, 'Error processing file', true);
         const errorMessage = error instanceof Error ? error.message : 'Failed to process file';
-        finalContent = content 
+        finalContent = content
           ? `${content}\n\n[Error processing file: ${errorMessage}]`
           : `[Error processing file: ${errorMessage}]`;
+      } finally {
+        // ALWAYS resume microphone if voice was active
+        if (voiceHook.isActive) {
+          voiceHook.resumeMicrophone();
+        }
       }
     }
 
@@ -730,19 +749,19 @@ export default function Home() {
     // For PDFs, finalContent now includes the extracted text for AI context
     // For text files, finalContent includes the file content
     const messageContent = finalContent || content || '[File attachment]';
-    
+
     try {
       const userResponse = await fetch(`/api/chats/${chatId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          role: 'user', 
+        body: JSON.stringify({
+          role: 'user',
           content: messageContent,
         }),
       });
 
       let userMessage: any;
-      
+
       if (!userResponse.ok) {
         let errorData: any = {};
         try {
@@ -754,34 +773,34 @@ export default function Home() {
           // Response might not be JSON
           console.warn('Error response is not JSON:', e);
         }
-        
+
         // If chat not found (404), try to create a new chat and retry
         if (userResponse.status === 404 && errorData?.error === 'Chat not found') {
           console.log('[handleSendMessage] Chat not found, creating new chat and retrying...');
-          
+
           if (!sessionId) {
             throw new Error('Session ID is required to create a new chat');
           }
-          
+
           // Create a new chat
           const newChatResponse = await fetch('/api/chats', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId }),
           });
-          
+
           if (!newChatResponse.ok) {
             throw new Error('Failed to create new chat');
           }
-          
+
           const newChat = await newChatResponse.json();
           chatId = newChat.id;
-          
+
           // Update refs and state
           conversationChatIdRef.current = chatId || null;
           setSelectedChatId(chatId);
           setMessages([]);
-          
+
           // Add new chat to list
           setChats((prev) => [
             {
@@ -791,22 +810,22 @@ export default function Home() {
             },
             ...prev,
           ]);
-          
+
           // Retry saving the message with the new chatId
           const retryResponse = await fetch(`/api/chats/${chatId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              role: 'user', 
+            body: JSON.stringify({
+              role: 'user',
               content: messageContent,
             }),
           });
-          
+
           if (!retryResponse.ok) {
             const retryErrorData = await retryResponse.json().catch(() => ({}));
             throw new Error(retryErrorData?.error || retryErrorData?.details || 'Failed to save message after creating new chat');
           }
-          
+
           userMessage = await retryResponse.json();
         } else {
           // For other errors, throw normally
@@ -816,7 +835,7 @@ export default function Home() {
             errorData,
             chatId,
           });
-          
+
           const errorMessage = errorData?.error || errorData?.details || errorData?.message || `Failed to save message (${userResponse.status})`;
           throw new Error(errorMessage);
         }
@@ -824,7 +843,13 @@ export default function Home() {
         // Normal case: response is OK
         userMessage = await userResponse.json();
       }
-      
+
+      console.log('[handleSendMessage] User message saved to database:', {
+        messageId: userMessage.id,
+        contentLength: userMessage.content?.length || 0,
+        chatId
+      });
+
       // Convert timestamp to Date object
       const userMessageWithDate: MessageDisplay = {
         id: userMessage.id,
@@ -834,17 +859,19 @@ export default function Home() {
         fileAttachment,
         icpExtraction,
       };
-      
+
       setMessages((prev) => [...prev, userMessageWithDate]);
 
       // Analyze message for ICP data and update
       try {
         const detectedICP = analyzeMessageForICP(content, 'user');
         console.log('Detected ICP data from user message:', detectedICP);
-        
+
         // Always update ICP data, even if nothing detected (to ensure it exists and recalculate progress)
-        const currentICP: ICPData = icpData || { chat_id: chatId! };
-        
+        // Always update ICP data, even if nothing detected (to ensure it exists and recalculate progress)
+        // CRITICAL FIX: Use fresh processedICPData if we just parsed a PDF, otherwise use state
+        const currentICP: ICPData = processedICPData || icpData || { chat_id: chatId! };
+
         // Preserve existing completion flags BEFORE updating
         // These flags may have been set by PDF processing or user confirmation
         const preservedCompletionFlags = {
@@ -854,35 +881,41 @@ export default function Home() {
           buying_process_complete: currentICP.buying_process_complete === true,
           budget_decision_complete: currentICP.budget_decision_complete === true,
         };
-        
+
         // Merge detected ICP data, but preserve existing valid fields
         // Don't overwrite existing company_name if new extraction is invalid or empty
         const updatedICP: Partial<ICPData> = {
           ...currentICP,
         };
-        
+
         // Only update fields if detected value is valid and existing value is not already valid
         for (const [key, value] of Object.entries(detectedICP)) {
           if (value !== undefined && value !== null && value !== '') {
             // Special handling for company_name - don't overwrite if existing is valid
             if (key === 'company_name' && currentICP.company_name) {
-              // Only overwrite if existing is clearly invalid or new is clearly better
-              const existingIsValid = currentICP.company_name.length > 2 && 
-                                      currentICP.company_name.length < 100 &&
-                                      /^[A-Z]/.test(currentICP.company_name);
-              if (existingIsValid) {
-                // Keep existing valid company name
+              // Use proper validation function
+              const existingIsValid = isValidCompanyName(currentICP.company_name);
+              const newIsValid = isValidCompanyName(value as string);
+
+              // Only overwrite if existing is invalid AND new is valid
+              if (existingIsValid && !newIsValid) {
+                // Keep existing valid company name, reject invalid new one
+                continue;
+              }
+              // If existing is invalid but new is valid, allow update
+              // If both are valid, prefer existing (don't overwrite)
+              if (existingIsValid && newIsValid) {
                 continue;
               }
             }
             // For other fields, update if detected value is valid
-            updatedICP[key as keyof ICPData] = value;
+            updatedICP[key as keyof ICPData] = value as any;
           }
         }
-        
+
         // Update section completion
         const completedICP = updateSectionCompletion(updatedICP as ICPData);
-        
+
         // Restore preserved flags - if a section was already marked complete,
         // keep it complete even if updateSectionCompletion recalculated it as false
         if (preservedCompletionFlags.company_basics_complete) {
@@ -900,16 +933,16 @@ export default function Home() {
         if (preservedCompletionFlags.budget_decision_complete) {
           completedICP.budget_decision_complete = true;
         }
-        
+
         console.log('Updated ICP data with completion:', completedICP);
-        
+
         // Save to database
         const icpResponse = await fetch(`/api/chats/${chatId}/icp`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(completedICP),
         });
-        
+
         if (icpResponse.ok) {
           const savedICP = await icpResponse.json();
           console.log('Saved ICP data:', savedICP);
@@ -965,30 +998,34 @@ export default function Home() {
       return;
     }
 
-    setIsLoading(true);
-
     // Clear previous AI message ID ref for new message
     lastAIMessageIdRef.current = null;
     currentSummaryRef.current = null;
     currentSummaryMessageIdRef.current = null;
     voiceStreamingMessageIdRef.current = null;
 
+    // Only set loading state for text mode - voice mode handles its own state transitions
+    if (!voiceHook.isActive) {
+      setIsLoading(true);
+    }
+
     // Create abort controller for barge-in support
-    const abortController = new AbortController();
+    // Will be replaced by voice hook's turn management if active
+    let abortController = new AbortController();
     currentAbortControllerRef.current = abortController;
-    
+
     // Set abort controller in voice hook immediately for barge-in support
     voiceHook.setOpenAIAbortController(abortController);
-    
+
     // Track OpenAI timing (must be in scope for stream completion)
     const openaiStartTime = Date.now();
     // Track if ICP data was updated during the response to avoid redundant reloads
     let icpDataUpdated = false;
-    voiceLogger.log('OpenAI', 'Starting stream', { 
-      conversationId: conversationIdRef.current, 
-      chatId 
+    voiceLogger.log('OpenAI', 'Starting stream', {
+      conversationId: conversationIdRef.current,
+      chatId
     });
-    
+
     // If we have ICP extraction from PDF, modify the system prompt or add context
     // The AI will use the summary we generated
     let aiPromptContext = '';
@@ -997,7 +1034,7 @@ export default function Home() {
       // We'll let the AI know about this in the conversation
       aiPromptContext = icpExtraction.summary;
     }
-    
+
     // Call AI API with streaming
     let timeoutId: NodeJS.Timeout | undefined;
     try {
@@ -1017,20 +1054,96 @@ export default function Home() {
         throw new Error(errorData.error || 'Failed to get AI response');
       }
 
+      // CRITICAL: Create assistant message IMMEDIATELY when stream starts
+      const assistantMessageId = `assistant-${Date.now()}`;
+      const assistantMessage: MessageDisplay = {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '', // Empty initially
+        timestamp: new Date(),
+        icpExtraction: icpExtraction,
+      };
+
+      // Add to messages immediately
+      setMessages((prev) => [...prev, assistantMessage]);
+
+      // Store for voice mode
+      lastAIMessageIdRef.current = assistantMessageId;
+      voiceStreamingMessageIdRef.current = assistantMessageId;
+
+      // CRITICAL FIX: Start new assistant turn BEFORE getting reader
+      // This ensures turnId is captured before any async operations
+      let capturedTurnId: number | undefined;
+      if (voiceHook.isActive && voiceHook.startNewAssistantTurn) {
+        // Access ref directly to get current turnId before incrementing
+        const currentTurnIdBefore = (voiceHook as any).currentAssistantTurnRef?.current?.turnId;
+        console.log('[Turn Management] Calling startNewAssistantTurn BEFORE SSE read', {
+          messageId: assistantMessageId,
+          currentTurnIdBefore
+        });
+        capturedTurnId = voiceHook.startNewAssistantTurn(assistantMessageId);
+        console.log('[Turn Management] Turn created, capturedTurnId:', capturedTurnId);
+
+        // Use the abortController from the turn management (for proper barge-in cancellation)
+        // The turn management creates a new AbortController for each turn
+        const turnAbortController = (voiceHook as any).currentAssistantTurnRef?.current?.abortController;
+        if (turnAbortController) {
+          abortController = turnAbortController;
+          currentAbortControllerRef.current = abortController;
+          voiceHook.setOpenAIAbortController(abortController);
+        }
+      }
+
       // Handle streaming response
       const reader = aiResponse.body?.getReader();
       if (!reader) {
         console.error('[AI Request] No response body reader available');
         throw new Error('Failed to get response reader');
       }
-      console.log('[AI Request] Stream reader obtained, starting to read...');
-      
+      // CRITICAL FIX: Read currentTurnId directly from ref to avoid getter closure issues
+      // Note: TurnId may change if barge-in occurred, which is expected behavior
+      // We don't need to log this as an error - the stream will be stopped naturally if turn changed
+      const currentTurnIdAtStart = voiceHook.isActive
+        ? (voiceHook as any).currentAssistantTurnRef?.current?.turnId
+        : undefined;
+
+      // Only log mismatch for debugging, not as an error (barge-in can cause this)
+      if (voiceHook.isActive && capturedTurnId !== undefined && capturedTurnId !== currentTurnIdAtStart) {
+        console.log('[AI Request] TurnId changed before stream start (likely barge-in)', {
+          capturedTurnId,
+          currentTurnIdAtStart
+        });
+      }
+
       const decoder = new TextDecoder();
       let fullContent = '';
-      let messageId = `temp-${Date.now()}`;
+
+      let messageId = assistantMessageId; // Use the same ID
       let firstTokenReceived = false;
       const firstTokenTime = Date.now();
-      
+
+      // Store summary for voice mode if we have ICP extraction
+      const initialContent = icpExtraction?.summary || '';
+      if (initialContent && voiceHook.isActive) {
+        currentSummaryRef.current = initialContent;
+        currentSummaryMessageIdRef.current = messageId;
+      } else {
+        currentSummaryRef.current = null;
+        currentSummaryMessageIdRef.current = null;
+      }
+
+      // Update message with initial content if we have a summary
+      if (initialContent) {
+        setMessages((prev) =>
+          prev.map(msg =>
+            msg.id === messageId
+              ? { ...msg, content: initialContent }
+              : msg
+          )
+        );
+        setStreamingAIContent(initialContent);
+      }
+
       // Add timeout to prevent getting stuck (5 minutes max)
       const timeoutDuration = 5 * 60 * 1000; // 5 minutes
       timeoutId = setTimeout(() => {
@@ -1046,42 +1159,6 @@ export default function Home() {
         };
         setMessages((prev) => [...prev, timeoutMessage]);
       }, timeoutDuration);
-
-      // Create initial streaming message
-      // If we have ICP extraction, start with the summary
-      const initialContent = icpExtraction?.summary || '';
-      
-      // Store summary for voice mode
-      if (initialContent && voiceHook.isActive) {
-        currentSummaryRef.current = initialContent;
-        currentSummaryMessageIdRef.current = messageId;
-      } else {
-        currentSummaryRef.current = null;
-        currentSummaryMessageIdRef.current = null;
-      }
-      
-      const streamingMessage: MessageDisplay = {
-        id: messageId,
-        role: 'assistant',
-        content: initialContent,
-        timestamp: new Date(),
-        icpExtraction: icpExtraction,
-      };
-      
-      // CRITICAL: Always show the summary immediately, even in voice mode
-      // The summary is important feedback about what was extracted from the PDF
-      if (initialContent) {
-        setMessages((prev) => [...prev, streamingMessage]);
-        setStreamingAIContent(initialContent);
-      } else if (!voiceHook.isActive) {
-        // Only add empty streaming message if not in voice mode
-        setMessages((prev) => [...prev, streamingMessage]);
-      }
-      
-      // If we have a summary, also update streaming content
-      if (initialContent) {
-        setStreamingAIContent(initialContent);
-      }
 
       // Read stream
       try {
@@ -1100,6 +1177,22 @@ export default function Home() {
             break;
           }
 
+          // CRITICAL FIX: Check if still current turn (for barge-in)
+          // Only check if we captured a turnId and voice is active
+          // Access ref directly to avoid getter closure issues
+          if (voiceHook.isActive && capturedTurnId !== undefined) {
+            const currentTurnId = (voiceHook as any).currentAssistantTurnRef?.current?.turnId;
+            if (currentTurnId !== undefined && currentTurnId !== capturedTurnId) {
+              console.log('[Stream] Turn changed, stopping stream', {
+                capturedTurnId,
+                currentTurnId,
+                reason: 'Turn ID mismatch - barge-in or new turn started'
+              });
+              clearTimeout(timeoutId);
+              break;
+            }
+          }
+
           const chunk = decoder.decode(value);
           const lines = chunk.split('\n').filter(line => line.trim() !== '');
 
@@ -1107,21 +1200,21 @@ export default function Home() {
             if (line.startsWith('data: ')) {
               try {
                 const data = JSON.parse(line.slice(6));
-                
+
                 if (data.done && data.message) {
                   // Final message from server
                   // If we have ICP extraction, combine summary with AI response
                   const aiResponseContent = data.message.content;
-                  const finalContent = icpExtraction?.summary 
+                  const finalContent = icpExtraction?.summary
                     ? `${icpExtraction.summary}\n\n${aiResponseContent}`
                     : aiResponseContent;
-                  
+
                   // CRITICAL: In voice mode, handle summary properly
                   // If summary was already shown, update that message instead of creating new one
                   if (voiceHook.isActive) {
                     // Store the server message ID
                     lastAIMessageIdRef.current = data.message.id;
-                    
+
                     // If we have a summary that was already shown, use that message ID
                     // Otherwise, use the server message ID
                     if (currentSummaryMessageIdRef.current) {
@@ -1135,36 +1228,36 @@ export default function Home() {
                       timestamp: new Date(data.message.created_at),
                       icpExtraction: icpExtraction,
                     };
-                    setMessages((prev) => 
+                    setMessages((prev) =>
                       prev.map(msg => msg.id === messageId ? finalMessage : msg)
                     );
                     setStreamingAIContent(''); // Clear streaming content when done
                   }
-                  
+
                   // If we have ICP extraction from PDF, show confirmation cards
                   // This will be handled in ChatArea component
-                  
+
                   // Log timing metrics (openaiStartTime is defined before fetch)
                   const totalDuration = Date.now() - openaiStartTime;
-                  voiceLogger.timing('Total LLM duration', totalDuration, { 
-                    conversationId: conversationIdRef.current, 
-                    chatId 
+                  voiceLogger.timing('Total LLM duration', totalDuration, {
+                    conversationId: conversationIdRef.current,
+                    chatId
                   });
-                  
-                  voiceLogger.log('OpenAI', 'Stream complete, flushing TTS', { 
-                    conversationId: conversationIdRef.current, 
-                    chatId 
+
+                  voiceLogger.log('OpenAI', 'Stream complete, flushing TTS', {
+                    conversationId: conversationIdRef.current,
+                    chatId
                   });
-                  
+
                   // Flush remaining TTS buffer
                   voiceHook.flushTTS();
-                  
+
                   // Analyze AI response for ICP data
                   try {
                     const detectedICP = analyzeMessageForICP(data.message.content, 'assistant');
                     if (Object.keys(detectedICP).length > 0 && chatId) {
                       const currentICP: ICPData = icpData || { chat_id: chatId };
-                      
+
                       // Preserve existing completion flags BEFORE updating
                       // These flags may have been set by PDF processing or user confirmation
                       const preservedCompletionFlags = {
@@ -1174,13 +1267,13 @@ export default function Home() {
                         buying_process_complete: currentICP.buying_process_complete === true,
                         budget_decision_complete: currentICP.budget_decision_complete === true,
                       };
-                      
+
                       const updatedICP = {
                         ...currentICP,
                         ...detectedICP,
                       };
                       const completedICP = updateSectionCompletion(updatedICP as ICPData);
-                      
+
                       // Restore preserved flags - if a section was already marked complete,
                       // keep it complete even if updateSectionCompletion recalculated it as false
                       if (preservedCompletionFlags.company_basics_complete) {
@@ -1198,13 +1291,13 @@ export default function Home() {
                       if (preservedCompletionFlags.budget_decision_complete) {
                         completedICP.budget_decision_complete = true;
                       }
-                      
+
                       const icpResponse = await fetch(`/api/chats/${chatId}/icp`, {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(completedICP),
                       });
-                      
+
                       if (icpResponse.ok) {
                         const savedICP = await icpResponse.json();
                         console.log('[ICP Update] Saved ICP data:', {
@@ -1227,38 +1320,34 @@ export default function Home() {
                     console.error('Error extracting ICP from AI response:', error);
                     // Don't let ICP update errors break the stream
                   }
-                  
+
                   // Reload chats (ICP data already updated above, no need to reload)
                   if (sessionId) loadChats(sessionId);
-                  } else if (data.content) {
+                } else if (data.content) {
                   // Streaming content chunk
                   if (!firstTokenReceived) {
                     firstTokenReceived = true;
                     const timeToFirstToken = Date.now() - firstTokenTime;
-                    voiceLogger.timing('OpenAI time-to-first-token', timeToFirstToken, { 
-                      conversationId: conversationIdRef.current, 
-                      chatId 
+                    voiceLogger.timing('OpenAI time-to-first-token', timeToFirstToken, {
+                      conversationId: conversationIdRef.current,
+                      chatId
                     });
-                    voiceLogger.log('OpenAI', 'First token received', { 
-                      chatId, 
-                      conversationId: conversationIdRef.current, 
-                      timeToFirstToken 
+                    voiceLogger.log('OpenAI', 'First token received', {
+                      chatId,
+                      conversationId: conversationIdRef.current,
+                      timeToFirstToken
                     });
-                    
-                    // CRITICAL FIX: Prepare TTS immediately when first token arrives
-                    // This ensures TTS starts speaking in parallel with OpenAI streaming
-                    if (voiceHook.isActive && voiceHook.prepareTTS) {
-                      voiceHook.prepareTTS();
-                    }
+
+                    // TTS preparation is handled by streamToTTS() - single source of truth
                   }
-                  
+
                   fullContent += data.content;
-                  
+
                   // Combine summary with streaming content if we have ICP extraction
-                  const displayContent = icpExtraction?.summary 
+                  const displayContent = icpExtraction?.summary
                     ? `${icpExtraction.summary}\n\n${fullContent}`
                     : fullContent;
-                  
+
                   // CRITICAL: In voice mode, don't update message display immediately
                   // Let onTextSpoken callback handle it (synchronized with audio)
                   if (!voiceHook.isActive) {
@@ -1271,7 +1360,7 @@ export default function Home() {
                       )
                     );
                   }
-                  
+
                   // Stream to TTS immediately (will buffer but start speaking quickly)
                   if (voiceHook.isActive) {
                     voiceHook.streamToTTS(data.content);
@@ -1311,9 +1400,9 @@ export default function Home() {
     } catch (error: any) {
       // Check if error is due to abort (barge-in)
       if (error.name === 'AbortError') {
-        voiceLogger.log('OpenAI', 'Stream aborted due to barge-in', { 
-          conversationId: conversationIdRef.current, 
-          chatId 
+        voiceLogger.log('OpenAI', 'Stream aborted due to barge-in', {
+          conversationId: conversationIdRef.current,
+          chatId
         });
         // Don't show error message for intentional abort
         setIsLoading(false);
@@ -1321,13 +1410,13 @@ export default function Home() {
         voiceHook.setOpenAIAbortController(null);
         return;
       }
-      
-      voiceLogger.error('OpenAI', error instanceof Error ? error : new Error(String(error)), { 
-        conversationId: conversationIdRef.current, 
-        chatId 
+
+      voiceLogger.error('OpenAI', error instanceof Error ? error : new Error(String(error)), {
+        conversationId: conversationIdRef.current,
+        chatId
       });
       console.error('Error getting AI response:', error);
-      
+
       // Show error message to user
       const errorMessage = {
         id: `error-${Date.now()}`,
@@ -1340,7 +1429,10 @@ export default function Home() {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       // CRITICAL: Always reset loading state, even if there was an error
-      setIsLoading(false);
+      // Only reset if we set it (i.e., not in voice mode)
+      if (!voiceHook.isActive) {
+        setIsLoading(false);
+      }
       currentAbortControllerRef.current = null; // Clear abort controller
       voiceHook.setOpenAIAbortController(null); // Clear in voice hook
       // Clear timeout if it still exists (in case stream completed normally)
@@ -1361,30 +1453,32 @@ export default function Home() {
     if (!conversationIdRef.current) {
       conversationIdRef.current = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       voiceLogger.setConversationContext(conversationIdRef.current, conversationChatIdRef.current);
-      voiceLogger.log('Conversation', 'Starting', { 
-        conversationId: conversationIdRef.current, 
-        chatId: conversationChatIdRef.current 
+      voiceLogger.log('Conversation', 'Starting', {
+        conversationId: conversationIdRef.current,
+        chatId: conversationChatIdRef.current
       });
     }
-    
+
     // Call voice hook's startConversation
     await voiceHook.startConversation();
   }, [voiceHook]);
 
   // Wrapper for endConversation to clear conversation context
   const handleEndConversation = useCallback(async () => {
-    voiceLogger.log('Conversation', 'Ending conversation', { 
-      conversationId: conversationIdRef.current, 
-      chatId: conversationChatIdRef.current 
+    voiceLogger.log('Conversation', 'Ending conversation', {
+      conversationId: conversationIdRef.current,
+      chatId: conversationChatIdRef.current
     });
-    
+
     // CRITICAL FIX: Only clear conversationId, NOT chatId
     // This preserves the chat across pause/resume cycles
     // Only clear chatId if user explicitly wants a new conversation
     conversationIdRef.current = null;
     // DO NOT clear conversationChatIdRef.current here - preserve chat across pause/resume
-    voiceLogger.clearContext();
-    
+    // Don't clear context immediately - preserve it for final logging
+    // Context will be cleared when a new conversation starts
+    // This prevents "unknown" IDs in logs after conversation ends
+
     // Call voice hook's endConversation
     voiceHook.endConversation();
   }, [voiceHook]);
@@ -1392,7 +1486,7 @@ export default function Home() {
   // Handle ICP section confirmation
   const handleConfirmSection = useCallback(async (section: string) => {
     if (!selectedChatId || !pendingICPData) return;
-    
+
     try {
       // Update the database with the confirmed section data
       const response = await fetch(`/api/chats/${selectedChatId}/icp`, {
@@ -1400,15 +1494,15 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(pendingICPData),
       });
-      
+
       if (response.ok) {
         const updatedData = await response.json();
         setIcpData(updatedData);
         setProgress(calculateProgress(updatedData));
-        
+
         // Mark section as confirmed
         setConfirmedSections((prev) => new Set(prev).add(section));
-        
+
         console.log(`[ICP Confirmation] Section "${section}" confirmed and saved`);
       }
     } catch (error) {
@@ -1427,25 +1521,25 @@ export default function Home() {
   // Handle confirming all sections at once
   const handleConfirmAllSections = useCallback(async () => {
     if (!selectedChatId || !pendingICPData) return;
-    
+
     try {
       const response = await fetch(`/api/chats/${selectedChatId}/icp`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(pendingICPData),
       });
-      
+
       if (response.ok) {
         const updatedData = await response.json();
         setIcpData(updatedData);
         setProgress(calculateProgress(updatedData));
-        
+
         // Hide cards after confirmation
         setShowICPCards(false);
         setPendingICPData(null);
-        
+
         console.log('[ICP Confirmation] All sections confirmed and saved');
-        
+
         // Reload ICP data to ensure state is fresh
         await loadICPData(selectedChatId);
       }
@@ -1457,17 +1551,17 @@ export default function Home() {
   // Generate ICP document
   const handleGenerateDocument = useCallback(async () => {
     if (!selectedChatId || isGenerating) return;
-    
+
     setIsGenerating(true);
     try {
       const response = await fetch(`/api/chats/${selectedChatId}/generate-document`, {
         method: 'POST',
       });
-      
+
       if (!response.ok) {
         throw new Error('Failed to generate document');
       }
-      
+
       const data = await response.json();
       setGeneratedDocument(data.document);
     } catch (error) {
@@ -1478,17 +1572,17 @@ export default function Home() {
   }, [selectedChatId, isGenerating]);
 
   // Check if ICP is complete
-  const isICPComplete = icpData?.company_basics_complete && 
-                        icpData?.target_customer_complete && 
-                        icpData?.problem_pain_complete && 
-                        icpData?.buying_process_complete && 
-                        icpData?.budget_decision_complete;
+  const isICPComplete = icpData?.company_basics_complete &&
+    icpData?.target_customer_complete &&
+    icpData?.problem_pain_complete &&
+    icpData?.buying_process_complete &&
+    icpData?.budget_decision_complete;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-      
+
       {/* Document Viewer Modal */}
       {generatedDocument && (
         <ICPDocumentViewer
@@ -1497,7 +1591,7 @@ export default function Home() {
           onClose={() => setGeneratedDocument(null)}
         />
       )}
-      
+
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar */}
@@ -1522,8 +1616,8 @@ export default function Home() {
             toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
             progress={progress}
           />
-          <ChatArea 
-            messages={messages} 
+          <ChatArea
+            messages={messages}
             isLoading={isLoading}
             voiceState={voiceHook.state}
             isVoiceActive={voiceHook.isActive}
@@ -1565,7 +1659,7 @@ export default function Home() {
                     onEdit={handleEditField}
                   />
                 )}
-                
+
                 {/* Target Customer */}
                 {(pendingICPData.target_customer_type || pendingICPData.target_demographics || pendingICPData.target_psychographics) && (
                   <ICPConfirmationCard
@@ -1579,7 +1673,7 @@ export default function Home() {
                     onEdit={handleEditField}
                   />
                 )}
-                
+
                 {/* Problem & Pain */}
                 {(pendingICPData.pain_points || pendingICPData.main_problems || pendingICPData.current_solutions) && (
                   <ICPConfirmationCard
@@ -1593,7 +1687,7 @@ export default function Home() {
                     onEdit={handleEditField}
                   />
                 )}
-                
+
                 {/* Buying Process */}
                 {(pendingICPData.decision_makers || pendingICPData.buying_process_steps || pendingICPData.evaluation_criteria) && (
                   <ICPConfirmationCard
@@ -1607,7 +1701,7 @@ export default function Home() {
                     onEdit={handleEditField}
                   />
                 )}
-                
+
                 {/* Budget & Decision Maker */}
                 {(pendingICPData.budget_range || pendingICPData.decision_maker_role || pendingICPData.approval_process) && (
                   <ICPConfirmationCard
@@ -1624,7 +1718,7 @@ export default function Home() {
               </div>
             </div>
           )}
-          
+
           {/* Generate Document Button */}
           {isICPComplete && !isLoading && (
             <div className="px-4 py-2 border-t border-border bg-muted/30">
@@ -1649,17 +1743,36 @@ export default function Home() {
               </button>
             </div>
           )}
-          
-          <ChatInput 
-            onSend={handleSendMessage} 
+
+          <ChatInput
+            onSend={handleSendMessage}
             disabled={false}
             voiceActive={voiceHook.isActive}
           />
+
+          {/* VAD Debug Overlay - Only visible when voice is active */}
+          {voiceHook.isActive && voiceHook.vadStats && (
+            <div className="fixed bottom-6 right-6 bg-black/90 text-green-400 p-3 rounded-lg text-xs font-mono z-[100] border border-green-900 shadow-xl pointer-events-none select-none backdrop-blur-sm min-w-[140px]">
+              <div className="text-center mb-1 text-gray-500 font-bold border-b border-gray-800 pb-1">VAD DEBUG</div>
+              <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                <div className="text-gray-500">Energy:</div>
+                <div className="text-right font-medium">{(voiceHook.vadStats.energy || 0).toFixed(4)}</div>
+
+                <div className="text-gray-500">Thresh:</div>
+                <div className="text-right font-medium text-yellow-500/80">{(voiceHook.vadStats.threshold || 0).toFixed(4)}</div>
+
+                <div className="text-gray-500">State:</div>
+                <div className={`text-right font-bold ${voiceHook.vadStats.isSpeaking ? "text-red-500 animate-pulse" : "text-gray-600"}`}>
+                  {voiceHook.vadStats.isSpeaking ? "SPEAKING" : "SILENT"}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right Voice Panel - Hidden on small screens */}
         <div className="hidden lg:block">
-          <VoicePanel 
+          <VoicePanel
             sessionId={sessionId}
             streamingAIContent={streamingAIContent}
             isAILoading={isLoading}
