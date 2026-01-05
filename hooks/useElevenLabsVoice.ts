@@ -48,6 +48,7 @@ const VAD_CONFIG = {
   silenceEndMs: 1000,           // 1s silence (ChatGPT-like, research: 800-1200ms) - was 1500ms
   minRecordingMs: 300,          // Minimum 300ms recording (reasonable minimum) - was 500ms
   minSpeechDurationMs: 400,     // Lower to 400ms (allows short responses like "yes") - was 800ms
+  maxRecordingMs: 30000,        // Maximum 30s recording to prevent infinite loops - was unlimited
   noiseMultiplier: 2.2,         // More balanced (research: 2.0-2.5x) - was 3.5 (too high)
   debugLogging: false,          // Disabled by default to reduce console overhead and improve latency
 };
@@ -356,6 +357,19 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
     speechStartTimeRef.current = null;
     silenceStartTimeRef.current = null;
     speechConfirmedTimeRef.current = null;
+    
+    // Set maximum recording timeout to prevent infinite loops
+    const maxRecordingTimeout = setTimeout(() => {
+      if (isRecordingRef.current && isActiveRef.current) {
+        console.log('[VAD] Maximum recording duration reached - forcing stop');
+        if (stopRecordingAndTranscribeRef.current) {
+          stopRecordingAndTranscribeRef.current();
+        }
+      }
+    }, VAD_CONFIG.maxRecordingMs);
+    
+    // Store timeout ref for cleanup
+    (recordingStartTimeRef as any).maxTimeout = maxRecordingTimeout;
 
     try {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -560,12 +574,18 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
               }
             }
           }
-        } else if (hasSpeechStart) {
-          // Clear energy is above threshold - definitely speaking, reset silence timer
-          silenceStartTimeRef.current = null;
+        } else {
+          // Energy is NOT below silence threshold - reset silence timer
+          // This fixes the issue where noise causes energy to fluctuate in the gray zone
+          // and prevents the system from getting stuck waiting for silence
+          if (silenceStartTimeRef.current !== null) {
+            // Energy went back up - reset silence timer
+            silenceStartTimeRef.current = null;
+            if (VAD_CONFIG.debugLogging) {
+              console.log('[VAD] Energy back up - resetting silence timer');
+            }
+          }
         }
-        // Note: If energy is in the "gray zone" (between silenceThreshold and speechStartThreshold),
-        // we don't reset the silence timer - this prevents flickering
       }
 
       vadFrameIdRef.current = requestAnimationFrame(checkEnergy);
@@ -584,6 +604,13 @@ export function useElevenLabsVoice(options: UseElevenLabsVoiceOptions) {
 
     log('Stopping recording for transcription');
     isRecordingRef.current = false;
+    
+    // Clear maximum recording timeout if it exists
+    const maxTimeout = (recordingStartTimeRef as any).maxTimeout;
+    if (maxTimeout) {
+      clearTimeout(maxTimeout);
+      (recordingStartTimeRef as any).maxTimeout = null;
+    }
     
     // Stop VAD
     if (vadFrameIdRef.current) {
