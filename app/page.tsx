@@ -682,7 +682,18 @@ export default function Home() {
         console.log('Detected ICP data from user message:', detectedICP);
         
         // Always update ICP data, even if nothing detected (to ensure it exists and recalculate progress)
-        const currentICP = icpData || { chat_id: chatId };
+        const currentICP: ICPData = icpData || { chat_id: chatId! };
+        
+        // Preserve existing completion flags BEFORE updating
+        // These flags may have been set by PDF processing or user confirmation
+        const preservedCompletionFlags = {
+          company_basics_complete: currentICP.company_basics_complete === true,
+          target_customer_complete: currentICP.target_customer_complete === true,
+          problem_pain_complete: currentICP.problem_pain_complete === true,
+          buying_process_complete: currentICP.buying_process_complete === true,
+          budget_decision_complete: currentICP.budget_decision_complete === true,
+        };
+        
         const updatedICP = {
           ...currentICP,
           ...detectedICP,
@@ -690,6 +701,25 @@ export default function Home() {
         
         // Update section completion
         const completedICP = updateSectionCompletion(updatedICP as ICPData);
+        
+        // Restore preserved flags - if a section was already marked complete,
+        // keep it complete even if updateSectionCompletion recalculated it as false
+        if (preservedCompletionFlags.company_basics_complete) {
+          completedICP.company_basics_complete = true;
+        }
+        if (preservedCompletionFlags.target_customer_complete) {
+          completedICP.target_customer_complete = true;
+        }
+        if (preservedCompletionFlags.problem_pain_complete) {
+          completedICP.problem_pain_complete = true;
+        }
+        if (preservedCompletionFlags.buying_process_complete) {
+          completedICP.buying_process_complete = true;
+        }
+        if (preservedCompletionFlags.budget_decision_complete) {
+          completedICP.budget_decision_complete = true;
+        }
+        
         console.log('Updated ICP data with completion:', completedICP);
         
         // Save to database
@@ -728,6 +758,7 @@ export default function Home() {
 
       // Update chat title if this is the first message (title is still "New Chat")
       const currentChat = chats.find(c => c.id === chatId);
+      let titleUpdated = false;
       if (currentChat?.title === 'New Chat') {
         // Use first 50 characters of message as title
         const newTitle = content.length > 50 ? content.substring(0, 50) + '...' : content;
@@ -737,13 +768,17 @@ export default function Home() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title: newTitle }),
           });
+          titleUpdated = true;
         } catch (error) {
           console.error('Error updating chat title:', error);
         }
       }
 
-      // Reload chats to update last message and title
-      if (sessionId) loadChats(sessionId);
+      // Reload chats only if title was updated (to refresh the title in sidebar)
+      // Otherwise, the chat list doesn't need immediate update after user message
+      if (sessionId && titleUpdated) {
+        loadChats(sessionId);
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       return;
@@ -765,6 +800,8 @@ export default function Home() {
     
     // Track OpenAI timing (must be in scope for stream completion)
     const openaiStartTime = Date.now();
+    // Track if ICP data was updated during the response to avoid redundant reloads
+    let icpDataUpdated = false;
     voiceLogger.log('OpenAI', 'Starting stream', { 
       conversationId: conversationIdRef.current, 
       chatId 
@@ -782,12 +819,15 @@ export default function Home() {
     // Call AI API with streaming
     let timeoutId: NodeJS.Timeout | undefined;
     try {
+      console.log('[AI Request] Starting API call to /api/ai/chat', { chatId });
       const aiResponse = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId }),
         signal: abortController.signal,
       });
+
+      console.log('[AI Request] Response status:', aiResponse.status, aiResponse.statusText);
 
       if (!aiResponse.ok) {
         const errorData = await aiResponse.json().catch(() => ({}));
@@ -798,8 +838,10 @@ export default function Home() {
       // Handle streaming response
       const reader = aiResponse.body?.getReader();
       if (!reader) {
+        console.error('[AI Request] No response body reader available');
         throw new Error('Failed to get response reader');
       }
+      console.log('[AI Request] Stream reader obtained, starting to read...');
       
       const decoder = new TextDecoder();
       let fullContent = '';
@@ -938,13 +980,42 @@ export default function Home() {
                   // Analyze AI response for ICP data
                   try {
                     const detectedICP = analyzeMessageForICP(data.message.content, 'assistant');
-                    if (Object.keys(detectedICP).length > 0) {
-                      const currentICP = icpData || { chat_id: chatId };
+                    if (Object.keys(detectedICP).length > 0 && chatId) {
+                      const currentICP: ICPData = icpData || { chat_id: chatId };
+                      
+                      // Preserve existing completion flags BEFORE updating
+                      // These flags may have been set by PDF processing or user confirmation
+                      const preservedCompletionFlags = {
+                        company_basics_complete: currentICP.company_basics_complete === true,
+                        target_customer_complete: currentICP.target_customer_complete === true,
+                        problem_pain_complete: currentICP.problem_pain_complete === true,
+                        buying_process_complete: currentICP.buying_process_complete === true,
+                        budget_decision_complete: currentICP.budget_decision_complete === true,
+                      };
+                      
                       const updatedICP = {
                         ...currentICP,
                         ...detectedICP,
                       };
                       const completedICP = updateSectionCompletion(updatedICP as ICPData);
+                      
+                      // Restore preserved flags - if a section was already marked complete,
+                      // keep it complete even if updateSectionCompletion recalculated it as false
+                      if (preservedCompletionFlags.company_basics_complete) {
+                        completedICP.company_basics_complete = true;
+                      }
+                      if (preservedCompletionFlags.target_customer_complete) {
+                        completedICP.target_customer_complete = true;
+                      }
+                      if (preservedCompletionFlags.problem_pain_complete) {
+                        completedICP.problem_pain_complete = true;
+                      }
+                      if (preservedCompletionFlags.buying_process_complete) {
+                        completedICP.buying_process_complete = true;
+                      }
+                      if (preservedCompletionFlags.budget_decision_complete) {
+                        completedICP.budget_decision_complete = true;
+                      }
                       
                       const icpResponse = await fetch(`/api/chats/${chatId}/icp`, {
                         method: 'PATCH',
@@ -965,16 +1036,17 @@ export default function Home() {
                         const newProgress = calculateProgress(savedICP);
                         console.log('[ICP Update] New progress:', newProgress);
                         setProgress(newProgress);
+                        icpDataUpdated = true; // Mark that ICP was updated
+                      } else {
+                        console.warn('[ICP Update] Failed to save ICP data:', icpResponse.status);
                       }
                     }
                   } catch (error) {
                     console.error('Error extracting ICP from AI response:', error);
+                    // Don't let ICP update errors break the stream
                   }
                   
-                  // Reload ICP data and chats
-                  if (chatId) {
-                    await loadICPData(chatId);
-                  }
+                  // Reload chats (ICP data already updated above, no need to reload)
                   if (sessionId) loadChats(sessionId);
                   } else if (data.content) {
                   // Streaming content chunk
@@ -1047,8 +1119,8 @@ export default function Home() {
       // Note: ICP analysis is already handled in the streaming handler above
       // when data.done is true and data.message is received
 
-      // Reload ICP data to get updated progress
-      if (chatId) {
+      // Reload ICP data only if it wasn't already updated during the response
+      if (chatId && !icpDataUpdated) {
         await loadICPData(chatId);
       }
 
@@ -1164,13 +1236,11 @@ export default function Home() {
 
   // Handle ICP field edit
   const handleEditField = useCallback((field: keyof ICPData, value: string) => {
-    if (!pendingICPData) return;
-    
     setPendingICPData((prev) => {
       if (!prev) return null;
       return { ...prev, [field]: value };
     });
-  }, [pendingICPData]);
+  }, []);
 
   // Handle confirming all sections at once
   const handleConfirmAllSections = useCallback(async () => {
@@ -1395,7 +1465,7 @@ export default function Home() {
           
           <ChatInput 
             onSend={handleSendMessage} 
-            disabled={isLoading || (voiceHook.isActive && voiceHook.state !== 'idle')} 
+            disabled={false}
             voiceActive={voiceHook.isActive}
           />
         </div>

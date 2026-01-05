@@ -79,10 +79,11 @@ export default function Sidebar({
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b border-border">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-md bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center">
-            <MessageSquare className="h-4 w-4 text-white" />
-          </div>
-          <h1 className="text-sm font-semibold text-foreground">ICP Builder</h1>
+          <img 
+            src="/AI Xccelerate logo.png" 
+            alt="AI Xccelerate Logo" 
+            className="h-7 w-auto"
+          />
         </div>
         <button
           onClick={toggleSidebar}

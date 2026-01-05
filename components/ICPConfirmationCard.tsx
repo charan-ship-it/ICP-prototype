@@ -20,8 +20,15 @@ export default function ICPConfirmationCard({
   const [isEditing, setIsEditing] = useState(false);
   const [editedValues, setEditedValues] = useState<Record<string, string>>({});
 
-  const handleEdit = (key: keyof ICPData, currentValue: string) => {
-    setEditedValues({ ...editedValues, [key]: currentValue });
+  const handleEdit = () => {
+    // Initialize editedValues with all field values at once
+    const initialValues: Record<string, string> = {};
+    fields.forEach((field) => {
+      if (field.value) {
+        initialValues[field.key] = field.value;
+      }
+    });
+    setEditedValues(initialValues);
     setIsEditing(true);
   };
 
@@ -63,7 +70,7 @@ export default function ICPConfirmationCard({
           ) : (
             <>
               <button
-                onClick={() => fields.forEach(f => handleEdit(f.key, f.value || ''))}
+                onClick={handleEdit}
                 className="rounded p-1 hover:bg-accent transition-colors"
                 aria-label="Edit"
               >

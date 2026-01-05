@@ -5,7 +5,7 @@
  * Claude-inspired design with clean message bubbles and smooth animations
  */
 
-import { Sparkles, Bot, User, FileText } from "lucide-react";
+import { User, FileText } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { MessageDisplay } from "@/types/chat";
 
@@ -45,8 +45,12 @@ export default function ChatArea({
     return (
       <div className="flex flex-1 items-center justify-center bg-background p-8">
         <div className="text-center max-w-lg animate-fade-in">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5">
-            <Sparkles className="h-10 w-10 text-primary" />
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-2xl overflow-hidden">
+            <img 
+              src="/Alex-Profile.png" 
+              alt="Alex Profile" 
+              className="h-full w-full object-cover"
+            />
           </div>
           <h3 className="mb-3 text-xl font-semibold text-foreground">Welcome to ICP Builder</h3>
           <p className="mb-8 text-sm text-muted-foreground leading-relaxed">
@@ -87,17 +91,19 @@ export default function ChatArea({
           >
             {/* Avatar */}
             <div className={`flex-shrink-0 flex items-start`}>
-              <div className={`flex h-8 w-8 items-center justify-center rounded-full ${
-                message.role === "user" 
-                  ? "bg-foreground text-background" 
-                  : "bg-primary/10 text-primary"
-              }`}>
-                {message.role === "user" ? (
+              {message.role === "user" ? (
+                <div className={`flex h-8 w-8 items-center justify-center rounded-full bg-foreground text-background`}>
                   <User className="h-4 w-4" />
-                ) : (
-                  <Bot className="h-4 w-4" />
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
+                  <img 
+                    src="/Alex-Profile.png" 
+                    alt="Alex Profile" 
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Message Content */}
@@ -124,7 +130,9 @@ export default function ChatArea({
                   </div>
                 )}
                 
-                <p className="text-[15px] leading-relaxed whitespace-pre-wrap">
+                <p className={`text-[15px] leading-relaxed whitespace-pre-wrap ${
+                  message.role === "user" ? "text-left" : ""
+                }`}>
                   {message.content}
                 </p>
               </div>
@@ -146,8 +154,12 @@ export default function ChatArea({
             {voiceState === 'thinking' && (
               <div className="flex gap-4 animate-fade-in">
                 <div className="flex-shrink-0 flex items-start">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <Bot className="h-4 w-4" />
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
+                    <img 
+                      src="/Alex-Profile.png" 
+                      alt="Alex Profile" 
+                      className="h-full w-full object-cover"
+                    />
                   </div>
                 </div>
                 <div className="flex-1 min-w-0">
@@ -168,8 +180,12 @@ export default function ChatArea({
             {voiceState === 'speaking' && (
               <div className="flex gap-4 animate-fade-in">
                 <div className="flex-shrink-0 flex items-center">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <Bot className="h-4 w-4" />
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
+                    <img 
+                      src="/Alex-Profile.png" 
+                      alt="Alex Profile" 
+                      className="h-full w-full object-cover"
+                    />
                   </div>
                 </div>
                 <div className="flex-1 min-w-0 flex items-center">
@@ -200,8 +216,12 @@ export default function ChatArea({
         {isLoading && !isVoiceActive && (
           <div className="flex gap-4 animate-fade-in">
             <div className="flex-shrink-0 flex items-start">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <Bot className="h-4 w-4" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
+                <img 
+                  src="/Alex-Profile.png" 
+                  alt="Alex Profile" 
+                  className="h-full w-full object-cover"
+                />
               </div>
             </div>
             <div className="flex-1 min-w-0">
